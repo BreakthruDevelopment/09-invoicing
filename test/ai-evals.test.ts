@@ -193,6 +193,11 @@ describe("eval 5: demo mode", () => {
   it("keeps the fixture lines on the seeded notes", async () => {
     const draft = await invoiceFromNotes({ notes: DEMO_SAMPLE_NOTES, clientRateCents: 15_000 });
     expect(draft.demo).toBe(true);
+    // Described by the notes they cite, not by the fixture's own wording.
+    expect(draft.lines.map((l) => l.description)).toEqual([
+      "Homepage redesign: 6h on layout and responsive fixes",
+      "Logo refresh, flat fee $450",
+    ]);
     expect(draft.lines.map((l) => [l.kind, l.quantityX100, l.unitPriceCents, l.amountCents])).toEqual([
       ["hours", 600, 15_000, 90_000],
       ["fixed", 100, 45_000, 45_000],
@@ -212,6 +217,7 @@ describe("eval 5: demo mode", () => {
   it("keeps the 6h line when only some of the fixture is supported", async () => {
     const draft = await invoiceFromNotes({ notes: "Homepage work took 6h today", clientRateCents: 10_000 });
     expect(draft.lines).toHaveLength(1);
+    expect(draft.lines[0].description).toBe("Homepage work took 6h today"); // not the fixture's "Homepage redesign"
     expect(draft.lines[0].amountCents).toBe(60_000);
     expect(draft.dropped.map((d) => d.code)).toEqual(["bad_citation"]);
   });

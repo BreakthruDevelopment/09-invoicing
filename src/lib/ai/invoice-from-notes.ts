@@ -78,11 +78,18 @@ function dollars(cents: number): string {
   return `$${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, "0")}`;
 }
 
+/** A note line can't close the data block early: strip until stable, so `</no</notes>tes>` can't rebuild a tag. */
+export function stripNotesTags(line: string): string {
+  let out = line;
+  for (let prev = ""; prev !== out; ) {
+    prev = out;
+    out = out.replace(/<\/?\s*notes\s*>/gi, "");
+  }
+  return out;
+}
+
 export function buildInvoicePrompt(input: InvoiceFromNotesInput, noteLines: readonly string[]): string {
-  const numbered = noteLines
-    // A line can't close the data block early.
-    .map((l, i) => `L${i + 1}: ${l.replace(/<\/?notes>/gi, "")}`)
-    .join("\n");
+  const numbered = noteLines.map((l, i) => `L${i + 1}: ${stripNotesTags(l)}`).join("\n");
   return [
     `Client hourly rate: ${dollars(input.clientRateCents)}`,
     input.period ? `Invoice period: ${input.period.from} to ${input.period.to}` : null,
@@ -92,6 +99,16 @@ export function buildInvoicePrompt(input: InvoiceFromNotesInput, noteLines: read
   ]
     .filter((l) => l !== null)
     .join("\n");
+}
+
+function describeFromNotes(model: InvoiceDraftModelOutput, noteLines: readonly string[]): InvoiceDraftModelOutput {
+  return {
+    ...model,
+    lines: model.lines.map((l) => {
+      const cited = noteLines[Number(l.sourceLines[0].slice(1)) - 1]?.trim();
+      return { ...l, description: (cited || l.evidence).slice(0, 300) || l.description };
+    }),
+  };
 }
 
 /**
@@ -108,7 +125,9 @@ export async function invoiceFromNotes(raw: unknown): Promise<InvoiceDraft> {
     schema: invoiceFromNotesSchema,
     maxOutputTokens: 1_200,
   });
-  const checked = applyInvoiceGuardrails(result.data, { noteLines, clientRateCents: input.clientRateCents });
+  // A recorded demo answer isn't about these notes: describe each line with the note it cites, not the fixture's text.
+  const model = result.demo ? describeFromNotes(result.data, noteLines) : result.data;
+  const checked = applyInvoiceGuardrails(model, { noteLines, clientRateCents: input.clientRateCents });
   return {
     lines: checked.lines,
     subtotalCents: sumCents(checked.lines.map((l) => l.amountCents)),

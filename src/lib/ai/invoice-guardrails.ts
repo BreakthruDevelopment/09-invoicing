@@ -13,7 +13,8 @@ export type DropCode =
   | "digit_rule"
   | "no_price"
   | "amount_zero"
-  | "amount_over_cap";
+  | "amount_over_cap"
+  | "duplicate";
 
 export type DroppedLine = { code: DropCode; reason: string; description: string };
 
@@ -45,13 +46,14 @@ const REASONS: Record<DropCode, string> = {
   no_price: "no price found in the cited note lines",
   amount_zero: "the amount is $0",
   amount_over_cap: "the amount is above $50,000",
+  duplicate: "the same work is already on another line",
 };
 
 /** Phrases that mean a note line is talking to the model rather than describing work. */
 const INJECTION_PATTERNS = [
   /\b(ignore|disregard|forget|override)\b[^.\n]{0,40}\b(instructions?|prompts?|rules|previous|above|prior)\b/i,
   /\b(system|developer) (prompt|message)\b/i,
-  /\byou (must|are now|will now)\b/i,
+  /\byou (are now|will now)\b/i,
   /\bas an ai\b/i,
 ];
 
@@ -105,15 +107,57 @@ export function timeRanges(text: string): { totalMinutes: number; rest: string; 
   return { totalMinutes: total, rest, count };
 }
 
-/** Digit rule: every digit sequence of the quantity appears as a number in the evidence (time ranges counted separately). */
-function passesDigitRule(kind: DraftLine["kind"], quantityX100: number, evidence: string): boolean {
-  // A fixed fee or expense is one thing; its amount is checked by the price rule.
-  if (kind !== "hours" && quantityX100 === 100) return true;
-  const { totalMinutes, rest, count } = timeRanges(evidence);
-  if (kind === "hours" && count > 0 && Math.abs(Math.round((totalMinutes / 60) * 100) - quantityX100) <= 1) return true;
-  const stated = new Set(rest.match(/\d+/g) ?? []);
-  const wanted = (quantityX100 / 100).toString().match(/\d+/g) ?? [];
-  return wanted.length > 0 && wanted.every((d) => stated.has(d));
+const WORD = /[A-Za-z0-9]/;
+
+/**
+ * Where `evidence` sits inside one note line, on word boundaries: it can't start or end in the middle of a word
+ * or number (`$100` is not evidence for `$1000`, `$129` not for `$129.50`). Both arguments are already normalized.
+ */
+function quotedIn(line: string, evidence: string): boolean {
+  for (let at = line.indexOf(evidence); at !== -1; at = line.indexOf(evidence, at + 1)) {
+    const before = line[at - 1];
+    const after = line[at + evidence.length];
+    const first = evidence[0];
+    const last = evidence[evidence.length - 1];
+    if (WORD.test(first) && before !== undefined && (WORD.test(before) || before === "$" || (/[.,]/.test(before) && /\d/.test(line[at - 2] ?? "")))) continue;
+    if (WORD.test(last) && after !== undefined && (WORD.test(after) || (/[.,]/.test(after) && /\d/.test(line[at + evidence.length + 1] ?? "")))) continue;
+    return true;
+  }
+  return false;
+}
+
+/** Evidence text with clock times and dollar amounts removed, so their digits can't pass for a quantity. */
+function withoutTimesAndPrices(text: string): string {
+  return text
+    .replace(/\d{1,2}:\d{2}/g, " ")
+    .replace(/\d{1,2}\s?(?:am|pm)\b/gi, " ")
+    .replace(/\$\s?\d[\d,]*(?:\.\d+)?/g, " ");
+}
+
+const HOURS_TOKEN = /(?<![\d.:$,])(\d+(?:\.\d+)?)\s?(?:h|hrs?|hours?)\b/gi;
+
+/**
+ * Quantity rule. Hours: one number written as `2h`, `1.5 hrs`, `3 hours` in the evidence, or the total of the time
+ * ranges on the cited line. Other kinds: quantity 1, or a number token in the evidence (not a time or a price).
+ */
+function passesQuantityRule(kind: DraftLine["kind"], quantityX100: number, evidence: string, citedLine: string): boolean {
+  const stripped = withoutTimesAndPrices(evidence);
+  if (kind === "hours") {
+    for (const m of stripped.matchAll(HOURS_TOKEN)) if (Math.round(Number(m[1]) * 100) === quantityX100) return true;
+    const { totalMinutes, count } = timeRanges(citedLine);
+    return count > 0 && Math.abs(Math.round((totalMinutes / 60) * 100) - quantityX100) <= 1;
+  }
+  if (quantityX100 === 100) return true; // one fee or one expense; its amount is checked by the price rule
+  return (stripped.match(/(?<![\d.])\d+(?:\.\d+)?/g) ?? []).some((t) => Math.round(Number(t) * 100) === quantityX100);
+}
+
+/** An hourly rate written in the evidence itself: `$120/h`, `$120/hr`, `$120 per hour`, `$120 an hour`. */
+const RATE_IN_EVIDENCE = /\$\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?\s*(?:\/\s?(?:h|hrs?|hours?)\b|per hour\b|an hour\b)/i;
+
+function rateInEvidence(evidence: string): number | null {
+  const m = evidence.match(RATE_IN_EVIDENCE);
+  if (!m) return null;
+  return Number(m[1].replace(/,/g, "")) * 100 + (m[2] ? Number(m[2].padEnd(2, "0")) : 0);
 }
 
 /**
@@ -126,12 +170,17 @@ export function applyInvoiceGuardrails(
   ctx: { noteLines: readonly string[]; clientRateCents: number },
 ): GuardrailResult {
   const lines: DraftLine[] = [];
+  const keys: { kind: string; quantityX100: number; cited: Set<number>; evidence: string }[] = [];
   const dropped: DroppedLine[] = [];
   const assumptions: string[] = [...model.assumptions];
 
   const drop = (code: DropCode, description: string, assume = false) => {
     dropped.push({ code, reason: REASONS[code], description: description.slice(0, 120) });
-    if (assume) assumptions.push(`Couldn't verify: ${description}`.slice(0, 200));
+    if (assume) {
+      assumptions.push(
+        (code === "duplicate" ? `Dropped a duplicate line: ${description}` : `Couldn't verify: ${description}`).slice(0, 200),
+      );
+    }
   };
 
   for (const m of model.lines) {
@@ -140,9 +189,9 @@ export function applyInvoiceGuardrails(
       drop("bad_citation", m.description);
       continue;
     }
-    const cited = indexes.map((n) => ctx.noteLines[n - 1]).join("\n");
+    const cited = indexes.map((n) => ctx.noteLines[n - 1]);
 
-    if (INJECTION_PATTERNS.some((p) => p.test(cited)) || INJECTION_PATTERNS.some((p) => p.test(m.evidence))) {
+    if (cited.some((c) => INJECTION_PATTERNS.some((p) => p.test(c))) || INJECTION_PATTERNS.some((p) => p.test(m.evidence))) {
       drop("injection", m.description);
       continue;
     }
@@ -151,7 +200,9 @@ export function applyInvoiceGuardrails(
       drop("evidence_missing", m.description, true);
       continue;
     }
-    if (!norm(cited).includes(evidence)) {
+    // Each cited line on its own: a quote can't join the end of one line to the start of the next.
+    const citedLine = cited.map(norm).find((c) => quotedIn(c, evidence));
+    if (citedLine === undefined) {
       drop("evidence_mismatch", m.description, true);
       continue;
     }
@@ -161,21 +212,22 @@ export function applyInvoiceGuardrails(
       drop("bad_quantity", m.description);
       continue;
     }
-    if (!passesDigitRule(m.kind, quantityX100, m.evidence)) {
+    if (!passesQuantityRule(m.kind, quantityX100, evidence, citedLine)) {
       drop("digit_rule", m.description, true);
       continue;
     }
 
-    // Price rule: a price only counts if the cited note lines show it as a dollar amount.
-    const inNotes = pricesInText(cited);
+    // Price rule. Hours: the client's rate, unless the evidence itself states a rate. Fixed and expense: the
+    // price must be written inside the evidence.
     let unitPriceCents: number;
-    if (m.unitPriceCents !== null && inNotes.has(m.unitPriceCents)) {
-      unitPriceCents = m.unitPriceCents;
-    } else if (m.kind === "hours") {
-      unitPriceCents = ctx.clientRateCents;
-      if (m.unitPriceCents !== null && m.unitPriceCents !== ctx.clientRateCents) {
-        assumptions.push(`Used the client rate for "${m.description}"; the price the model gave isn't in the notes.`.slice(0, 200));
+    if (m.kind === "hours") {
+      const stated = rateInEvidence(evidence);
+      unitPriceCents = stated ?? ctx.clientRateCents;
+      if (stated === null && m.unitPriceCents !== null && m.unitPriceCents !== ctx.clientRateCents) {
+        assumptions.push(`Used the client rate for "${m.description}"; the price the model gave isn't in the evidence.`.slice(0, 200));
       }
+    } else if (m.unitPriceCents !== null && pricesInText(evidence).has(m.unitPriceCents)) {
+      unitPriceCents = m.unitPriceCents;
     } else {
       drop("no_price", m.description, true);
       continue;
@@ -190,6 +242,21 @@ export function applyInvoiceGuardrails(
       drop("amount_over_cap", m.description);
       continue;
     }
+
+    // Same kind and quantity, a shared cited line, and one quote containing the other: the same work twice.
+    const citedSet = new Set(indexes);
+    const twin = keys.some(
+      (k) =>
+        k.kind === m.kind &&
+        k.quantityX100 === quantityX100 &&
+        indexes.some((n) => k.cited.has(n)) &&
+        (k.evidence.includes(evidence) || evidence.includes(k.evidence)),
+    );
+    if (twin) {
+      drop("duplicate", m.description, true);
+      continue;
+    }
+    keys.push({ kind: m.kind, quantityX100, cited: citedSet, evidence });
 
     lines.push({
       kind: m.kind,
