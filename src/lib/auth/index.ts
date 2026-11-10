@@ -4,6 +4,7 @@ import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { nextCookies } from "better-auth/next-js";
 import { admin } from "better-auth/plugins";
 import { db, schema } from "@/lib/db";
+import { refuseDemoIdentity } from "@/lib/demo-identity";
 import { env } from "@/lib/env";
 import { ac, DISABLED_AUTH_PATHS, roles } from "./permissions";
 
@@ -23,6 +24,14 @@ function createAuth() {
         verification: schema.verification,
       },
     }),
+    // Nobody can sign up as, or turn an account into, a demo identity (see demo-identity.ts). Demo loaders
+    // write rows directly with Drizzle and never go through these hooks.
+    databaseHooks: {
+      user: {
+        create: { before: async (data) => refuseDemoIdentity(data) },
+        update: { before: async (data) => refuseDemoIdentity(data) },
+      },
+    },
     emailAndPassword: {
       enabled: true,
       minPasswordLength: 10,
