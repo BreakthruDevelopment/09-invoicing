@@ -22,6 +22,13 @@
       "when": 1794281493312,
       "tag": "0002_background-jobs",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1794326412802,
+      "tag": "0003_invoice-core",
+      "breakpoints": true
     }
   ]
 }

@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 const url = process.env.TEST_DATABASE_URL;
 const PASSWORD = "correct-horse-battery";
-const MARKER = "urn:breakthru:demo:v1";
+const MARKER = "urn:breakthru:invoicing-demo:v1";
 const OTHER_APP_MARKER = "urn:breakthru:some-other-app-demo:v1";
 
 describe.skipIf(!url)("demo identity hooks (Better Auth + Postgres)", () => {

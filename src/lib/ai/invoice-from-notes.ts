@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { generate } from "./index";
 import { type DraftLine, type DroppedLine, applyInvoiceGuardrails } from "./invoice-guardrails";
-import { sumCents } from "./invoice-money";
+import { sumCents } from "@/lib/money";
 
 export const INVOICE_TASK = "invoice-from-notes";
 export const INVOICE_NOTES_MAX_CHARS = 6_000;
