@@ -6,6 +6,30 @@ import type { DemoToolScript } from "./types";
  * Each app adds a fixture for each AI task it defines.
  */
 export const demoFixtures: Record<string, unknown> = {
+  // Written for the demo seed's notes (`DEMO_SAMPLE_NOTES`): "6h" is on L1 and "$450" on L2. On any other notes the
+  // guardrails drop whatever they can't verify, so demo mode stays truthful.
+  "invoice-from-notes": {
+    lines: [
+      {
+        kind: "hours",
+        description: "Homepage redesign: layout and responsive fixes",
+        quantity: 6,
+        unitPriceCents: null,
+        sourceLines: ["L1"],
+        evidence: "6h",
+      },
+      {
+        kind: "fixed",
+        description: "Logo refresh (fixed fee)",
+        quantity: 1,
+        unitPriceCents: 45000,
+        sourceLines: ["L2"],
+        evidence: "$450",
+      },
+    ],
+    assumptions: ["Demo answer (recorded, not from a live model)."],
+    unbillable: [],
+  },
   "summarize-items": {
     summary:
       "You have a few open items. The most recent ones focus on setup work; nothing looks overdue.",

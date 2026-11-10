@@ -26,6 +26,8 @@ const schema = z.object({
   AI_EMBED_MODEL: z.string().optional(),
   // Provider call timeout. 20 s keeps AI calls inside Lambda's 29 s limit (route maxDuration is 25 s).
   AI_TIMEOUT_MS: z.coerce.number().int().positive().max(22000).default(20000),
+  // App-wide cap on AI drafts per UTC day (reserveDaily); keeps the free tier safe.
+  AI_DAILY_CAP: z.coerce.number().int().min(0).max(100000).default(200),
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 });
 
