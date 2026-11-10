@@ -247,7 +247,11 @@ export const stripeEvent = pgTable("stripe_event", {
   receivedAt: timestamptz("received_at").notNull().defaultNow(),
 });
 
-/** Notes the owner pasted for "Draft from notes" (issue 9.4 fills this in). The last 20 per owner are kept. */
+/**
+ * Notes the owner pasted for "Draft from notes", with the validated model answer (`data`, see
+ * `src/lib/invoice-draft.ts`). The last 20 per owner are kept (older ones are deleted on insert). `addedAt` makes a
+ * draft single-use: once its lines are on an invoice it can't be added again. Never logged.
+ */
 export const notesDraft = pgTable(
   "notes_draft",
   {
@@ -259,6 +263,9 @@ export const notesDraft = pgTable(
     notes: text("notes").notNull(),
     data: jsonb("data").$type<Record<string, unknown>>().notNull().default({}),
     mode: text("mode").notNull().default("live"),
+    /** Set in the same transaction that copies the selected lines onto an invoice. */
+    addedAt: timestamptz("added_at"),
+    addedInvoiceId: uuid("added_invoice_id"),
     createdAt: timestamptz("created_at").notNull().defaultNow(),
   },
   (t) => [

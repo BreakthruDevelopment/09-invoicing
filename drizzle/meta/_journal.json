@@ -43,6 +43,13 @@
       "when": 1794329291851,
       "tag": "0005_duplicate-payment-flag",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1794336246192,
+      "tag": "0006_notes-draft-single-use",
+      "breakpoints": true
     }
   ]
 }

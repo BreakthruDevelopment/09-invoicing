@@ -184,24 +184,63 @@ fi
 [ "$(status -X POST -H 'content-type: application/json' -d '{}' "$BASE_URL/api/stripe/webhook")" = "400" ] || fail "webhook without a signature should be 400"
 pass "webhook refuses a bad or missing signature"
 
+# Draft from notes and "Add to invoice". The rate comes from the client on the server; the browser sends ids only.
+DN="$BASE_URL/api/invoices/draft-from-notes"
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -H "origin: $BASE_URL" \
-  -d '{"notes":"6h","clientRateCents":10000}' "$BASE_URL/api/invoices/draft-from-notes")
+  -d "{\"notes\":\"6h\",\"clientId\":\"$client_id\"}" "$DN")
 [ "$code" = "401" ] || fail "anonymous draft-from-notes should be 401, got $code"
 code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_A" -H 'content-type: application/json' -H 'origin: https://evil.example' \
-  -d '{"notes":"6h","clientRateCents":10000}' "$BASE_URL/api/invoices/draft-from-notes")
+  -d "{\"notes\":\"6h\",\"clientId\":\"$client_id\"}" "$DN")
 [ "$code" = "403" ] || fail "cross-origin draft-from-notes should be 403, got $code"
 code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" \
-  -d '{"notes":"","clientRateCents":10000}' "$BASE_URL/api/invoices/draft-from-notes")
+  -d "{\"notes\":\"\",\"clientId\":\"$client_id\"}" "$DN")
 [ "$code" = "400" ] || fail "empty notes should be 400, got $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" \
+  -d "{\"notes\":\"6h\",\"clientId\":\"$client_id\",\"clientRateCents\":99999}" "$DN")
+[ "$code" = "400" ] || fail "a rate from the browser should be 400, got $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_B" -H 'content-type: application/json' -H "origin: $BASE_URL" \
+  -d "{\"notes\":\"6h\",\"clientId\":\"$client_id\"}" "$DN")
+[ "$code" = "404" ] || fail "user B drafting against A's client should be 404, got $code"
+NOTES='Homepage redesign: 6h on layout and responsive fixes\nLogo refresh, flat fee $450'
 draft=$(curl -fsS -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" \
-  -d '{"notes":"Homepage redesign: 6h on layout and responsive fixes\nLogo refresh, flat fee $450","clientRateCents":10000}' \
-  "$BASE_URL/api/invoices/draft-from-notes") || fail "draft-from-notes failed"
+  -d "{\"notes\":\"$NOTES\",\"clientId\":\"$client_id\"}" "$DN") || fail "draft-from-notes failed"
 echo "$draft" | grep -q '"lines":\[' || fail "draft has no lines array: $draft"
 echo "$draft" | grep -Eq '"subtotalCents":[0-9]+' || fail "draft has no subtotalCents: $draft"
-# Only the recorded demo answer has a known total; a live model's lines vary.
+draft_id=$(echo "$draft" | jget draft.draftId)
+[ -n "$draft_id" ] || fail "draft has no draftId: $draft"
+echo "$draft" | grep -Eq '"period":\{"from":"[0-9-]{10}","to":"[0-9-]{10}"\}' || fail "draft has no period: $draft"
+# Only the recorded demo answer has a known total (client rate $100/h from the client row); a live model's lines vary.
+is_demo=0
 if echo "$draft" | grep -q '"demo":true'; then
+  is_demo=1
   echo "$draft" | grep -q '"subtotalCents":105000' || fail "demo draft subtotal should be 105000 (computed server-side), got: $draft"
 fi
-pass "draft from notes: auth, origin, validation and server-computed subtotal"
+pass "draft from notes: auth, origin, validation, rate looked up from the client, saved with an id"
+
+# Add to invoice: draft invoices only, owner only, ids and indexes only, single-use.
+ai_draft=$(post_a /api/invoices "{\"clientId\":\"$client_id\",\"lines\":[{\"kind\":\"expense\",\"description\":\"Domain\",\"quantityX100\":100,\"unitPriceCents\":1500}]}") || fail "create AI target draft failed"
+ai_id=$(echo "$ai_draft" | jget invoice.id); ai_ver=$(echo "$ai_draft" | jget invoice.version)
+AL="$BASE_URL/api/invoices/$ai_id/draft-lines"
+[ "$(status -X POST -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{}' "$AL")" = "401" ] || fail "anonymous add-to-invoice should be 401"
+[ "$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H 'origin: https://evil.example' -d '{}' "$AL")" = "403" ] || fail "cross-origin add-to-invoice should be 403"
+[ "$(status -X POST -b "$JAR_B" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"draftId\":\"$draft_id\",\"lineIndexes\":[0],\"version\":$ai_ver}" "$AL")" = "404" ] || fail "user B adding to A's invoice should be 404"
+[ "$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"draftId\":\"$draft_id\",\"lineIndexes\":[0],\"version\":$ai_ver,\"unitPriceCents\":1,\"amountCents\":1,\"source\":\"manual\"}" "$AL")" = "400" ] || fail "amounts or source from the browser should be 400"
+[ "$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"draftId\":\"$draft_id\",\"lineIndexes\":[0],\"version\":$((ai_ver + 5))}" "$AL")" = "409" ] || fail "a stale version should be 409"
+if [ "$is_demo" = "1" ]; then
+  added=$(curl -fsS -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" \
+    -d "{\"draftId\":\"$draft_id\",\"lineIndexes\":[0,1],\"version\":$ai_ver}" "$AL") || fail "add to invoice failed"
+  # $15 manual + 6 h x $100 + flat $450, all computed on the server
+  [ "$(echo "$added" | jget invoice.subtotalCents)" = "106500" ] || fail "subtotal after add should be 106500: $added"
+  [ "$(echo "$added" | jget lines.1.source)" = "ai" ] || fail "added lines should be source ai: $added"
+  [ "$(echo "$added" | jget lines.2.source)" = "ai" ] || fail "added lines should be source ai: $added"
+  [ "$(echo "$added" | jget invoice.version)" = "$((ai_ver + 1))" ] || fail "version should go up by one: $added"
+  [ "$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"draftId\":\"$draft_id\",\"lineIndexes\":[0],\"version\":$((ai_ver + 1))}" "$AL")" = "409" ] || fail "adding the same draft twice should be 409"
+  sent_ai=$(post_a "/api/invoices/$ai_id/transition" "{\"to\":\"sent\",\"version\":$((ai_ver + 1))}") || fail "send AI invoice failed"
+  draft2=$(curl -fsS -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"notes\":\"$NOTES\",\"clientId\":\"$client_id\"}" "$DN") || fail "second draft failed"
+  [ "$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"draftId\":\"$(echo "$draft2" | jget draft.draftId)\",\"lineIndexes\":[0],\"version\":$(echo "$sent_ai" | jget invoice.version)}" "$AL")" = "409" ] || fail "a sent invoice must not take lines (409)"
+  pass "add to invoice: server-derived amounts, source ai, version bump, single-use, drafts only, owner only"
+else
+  pass "add to invoice: auth, ownership, tampering and stale-version refusals (live model: lines vary, amounts not asserted)"
+fi
 
 echo "SMOKE PASS"

@@ -9,8 +9,11 @@ export const maxDuration = 25;
 
 /**
  * POST /api/invoices/draft-from-notes
- * body: { notes: string (max 6,000), clientRateCents: int, period?: { from, to } }
- * Returns the verified draft (lines with evidence, subtotal, assumptions, dropped). Nothing is saved.
+ * body: { notes: string (max 6,000), clientId: uuid, period?: { from: "YYYY-MM-DD", to: "YYYY-MM-DD" } }
+ * The client must be the caller's; its hourly rate is looked up on the server (a `clientRateCents` field is a 400).
+ * `period` defaults to the 7 days ending today in the owner's time zone.
+ * Returns { draft: { draftId, clientId, period, lines, subtotalCents, assumptions, unbillable, dropped, demo } }.
+ * The notes and the validated answer are saved server-side (last 20 per owner); nothing is on an invoice yet.
  */
 export async function POST(request: Request) {
   try {

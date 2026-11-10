@@ -55,7 +55,7 @@ async function loadOwned(tx: Reader, actor: Actor, id: string, lock = false): Pr
   return row;
 }
 
-async function loadDraftForUpdate(tx: Tx, actor: Actor, id: string, version: number): Promise<Invoice> {
+export async function loadDraftForUpdate(tx: Tx, actor: Actor, id: string, version: number): Promise<Invoice> {
   const row = await loadOwned(tx, actor, id, true);
   assertCan(actor, "update", row);
   if (row.status !== "draft") throw new ConflictError("A sent invoice can't be changed. Void it and duplicate it instead.");
