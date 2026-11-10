@@ -16,7 +16,7 @@ export async function GET() {
   const ok = dbOk && migrationsOk;
   const body = {
     status: ok ? "ok" : "degraded",
-    app: process.env.APP_NAME ?? "30-apps-template",
+    app: process.env.APP_NAME ?? "Invoicing",
     version: process.env.APP_VERSION ?? "dev",
     cloud: process.env.CLOUD ?? "local",
     // "demo" or "stripe" (test mode); a mode name only, never a key.
