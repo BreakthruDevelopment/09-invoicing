@@ -265,6 +265,7 @@ export const notesDraft = pgTable(
     mode: text("mode").notNull().default("live"),
     /** Set in the same transaction that copies the selected lines onto an invoice. */
     addedAt: timestamptz("added_at"),
+    /** Audit only: deliberately no foreign key (the invoice may be deleted later); never used for access decisions. */
     addedInvoiceId: uuid("added_invoice_id"),
     createdAt: timestamptz("created_at").notNull().defaultNow(),
   },

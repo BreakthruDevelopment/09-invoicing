@@ -170,8 +170,9 @@ async function loadLocked(actor: Actor, mode: "admin" | "cli"): Promise<DemoLoad
   const ids = [...people.values()].map((p) => p.id);
   await db().transaction(async (tx) => {
     await tx.delete(schema.rateEvent).where(and(inArray(schema.rateEvent.userId, ids), sql`${schema.rateEvent.kind} <> 'demo_load'`));
-    await tx.delete(schema.notesDraft).where(inArray(schema.notesDraft.ownerId, ids));
+    // Same lock order as "Add to invoice" (invoice, then saved draft), so a reset can't deadlock with an add.
     await tx.delete(schema.invoice).where(inArray(schema.invoice.ownerId, ids)); // lines and payments cascade
+    await tx.delete(schema.notesDraft).where(inArray(schema.notesDraft.ownerId, ids));
     await tx.delete(schema.client).where(inArray(schema.client.ownerId, ids));
     await tx.delete(schema.businessProfile).where(inArray(schema.businessProfile.ownerId, ids));
   });

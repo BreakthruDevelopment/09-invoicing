@@ -103,13 +103,30 @@ describe.skipIf(!url)("add AI draft lines to an invoice (Postgres)", () => {
     expect((await lineRows(inv.id)).map((r) => r.kind)).toEqual(["expense", "fixed"]);
   });
 
-  it("takes the rate from the invoice's client row at add time, not from anything saved or sent", async () => {
+  it("takes the rate from the invoice's client row; a rate changed since drafting is a 409, never a silent re-price", async () => {
     const d = await draft(); // drafted while the rate was $100/h
+    expect(d.lines[0].unitPriceCents).toBe(10_000);
     await clients.updateClient(alice, acme, { hourlyRateCents: 12_000 });
     const inv = await newInvoice();
-    await draftMod.addDraftLinesToInvoice(alice, inv.id, { draftId: d.draftId, lineIndexes: [0], version: inv.version });
-    const rows = await lineRows(inv.id);
-    expect(rows[1]).toMatchObject({ unit_price_cents: 12_000, amount_cents: 72_000 });
+    await expect(draftMod.addDraftLinesToInvoice(alice, inv.id, { draftId: d.draftId, lineIndexes: [0], version: inv.version })).rejects.toMatchObject({
+      status: 409,
+      message: expect.stringMatching(/price changed/i),
+    });
+    expect(await lineRows(inv.id)).toHaveLength(1);
+    const [{ added_at }] = await sql`select added_at from notes_draft where id = ${d.draftId}`;
+    expect(added_at).toBeNull();
+    // Drafting again prices at the client's current rate, and that one adds.
+    const d2 = await draft();
+    expect(d2.lines[0].unitPriceCents).toBe(12_000);
+    await draftMod.addDraftLinesToInvoice(alice, inv.id, { draftId: d2.draftId, lineIndexes: [0], version: inv.version });
+    expect((await lineRows(inv.id))[1]).toMatchObject({ unit_price_cents: 12_000, amount_cents: 72_000 });
+  });
+
+  it("a changed price on a line that wasn't picked is also a 409 (the whole draft must still match what was shown)", async () => {
+    const d = await draft();
+    await sql`update notes_draft set data = jsonb_set(data, '{shown,1,unitPriceCents}', '44999') where id = ${d.draftId}`;
+    const inv = await newInvoice();
+    await expect(draftMod.addDraftLinesToInvoice(alice, inv.id, { draftId: d.draftId, lineIndexes: [0], version: inv.version })).rejects.toMatchObject({ status: 409 });
   });
 
   it("never accepts amounts, rates, sources, lines or totals from the browser", async () => {

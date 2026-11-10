@@ -72,7 +72,7 @@ const storedDraft = z.object({
   model: invoiceFromNotesSchema,
   period: periodSchema,
   shown: z
-    .array(z.object({ kind: z.string(), quantityX100: z.number().int(), sourceLines: z.array(z.string()), evidence: z.string() }))
+    .array(z.object({ kind: z.string(), quantityX100: z.number().int(), unitPriceCents: z.number().int(), sourceLines: z.array(z.string()), evidence: z.string() }))
     .max(20),
 });
 
@@ -120,7 +120,7 @@ export async function draftInvoiceFromNotes(actor: Actor, raw: unknown): Promise
       v: 1,
       model,
       period,
-      shown: draft.lines.map((l) => ({ kind: l.kind, quantityX100: l.quantityX100, sourceLines: l.sourceLines, evidence: l.evidence })),
+      shown: draft.lines.map((l) => ({ kind: l.kind, quantityX100: l.quantityX100, unitPriceCents: l.unitPriceCents, sourceLines: l.sourceLines, evidence: l.evidence })),
     };
     const saved = await db().transaction(async (tx) => {
       const [row] = await tx
@@ -166,7 +166,9 @@ export async function draftInvoiceFromNotes(actor: Actor, raw: unknown): Promise
  * invoice and then the saved draft:
  * - the invoice must be the actor's, still a draft, and `version` must match (409 otherwise);
  * - the rate comes from the invoice's own client row (`ownedBy`), and the guardrails are re-run on the saved notes
- *   and the saved model answer, so quantity, price and amount are derived here, with `money.ts`;
+ *   and the saved model answer, so quantity, price and amount are derived here, with `money.ts`. If any line's
+ *   price (or quantity, kind, evidence) differs from what the owner was shown, including a changed client rate, it
+ *   is a 409: the owner never gets a price they didn't see;
  * - the saved draft is single-use: it is marked added in the same transaction, so a retry or a race gets 409;
  * - the invoice totals are recomputed from all lines and `version` goes up by one.
  */
@@ -192,9 +194,9 @@ export async function addDraftLinesToInvoice(actor: Actor, invoiceId: string, ra
       checked.lines.length === data.data.shown.length &&
       checked.lines.every((l, i) => {
         const s = data.data.shown[i];
-        return l.kind === s.kind && l.quantityX100 === s.quantityX100 && l.evidence === s.evidence && l.sourceLines.join() === s.sourceLines.join();
+        return l.kind === s.kind && l.quantityX100 === s.quantityX100 && l.unitPriceCents === s.unitPriceCents && l.evidence === s.evidence && l.sourceLines.join() === s.sourceLines.join();
       });
-    if (!same) throw new ConflictError("This draft no longer matches the notes or the client's rate. Draft again.");
+    if (!same) throw new ConflictError("The price changed since this draft was made (the client's rate or the notes). Draft again.");
 
     // Draft order, whatever order the caller listed them in.
     const picked = [...input.lineIndexes]
