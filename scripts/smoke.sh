@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # End-to-end smoke test against a running app (local, CI, or a deployed URL).
 # Signs up two users over HTTP and walks the invoicing flow: client, draft, send, numbering, immutability,
-# ownership (other users get 404), share link, payment. Payments and webhook checks arrive with issue 9.2.
+# ownership (other users get 404), share link, manual payment, the payer's checkout and demo payment, the signed
+# webhook (a bad signature is refused), and the health `payments` mode. Needs no Stripe keys: without them the app
+# runs the demo provider; with test keys configured the demo steps are replaced by checks that demo-pay is off.
 #   BASE_URL=https://app7.breakthruventures.ai ./scripts/smoke.sh
 set -euo pipefail
 
@@ -11,11 +13,17 @@ JAR_A="$(mktemp)"; JAR_B="$(mktemp)"
 trap 'rm -f "$JAR_A" "$JAR_B"' EXIT
 
 fail() { echo "SMOKE FAIL: $*" >&2; exit 1; }
+# jget '<path.to.value>' reads a field from JSON on stdin
+jget() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=process.argv[1].split(".").reduce((a,k)=>a?.[k],JSON.parse(s));console.log(v==null?"":v)})' "$1"; }
 pass() { echo "ok - $*"; }
 
 health=$(curl -fsS "$BASE_URL/api/health") || fail "health endpoint unreachable"
 echo "$health" | grep -q '"status":"ok"' || fail "health not ok: $health"
 pass "health check"
+payments_mode=$(echo "$health" | jget payments)
+case "$payments_mode" in demo|stripe) ;; *) fail "health should report payments demo|stripe, got: $health" ;; esac
+echo "$health" | grep -Eq 'sk_|rk_|whsec_' && fail "health leaked a payment secret: $health"
+pass "health reports payments: $payments_mode"
 
 for path in / /sign-in; do
   page=$(curl -fsS "$BASE_URL$path") || fail "page $path did not render"
@@ -45,8 +53,6 @@ pass "two users signed up"
 # ---------------------------------------------------------------------------
 # status of a request; extra curl args follow the URL-less prefix
 status() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
-# jget '<path.to.value>' reads a field from JSON on stdin
-jget() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=process.argv[1].split(".").reduce((a,k)=>a?.[k],JSON.parse(s));console.log(v==null?"":v)})' "$1"; }
 post_a() { curl -fsS -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "$2" "$BASE_URL$1"; }
 
 [ "$(status "$BASE_URL/api/invoices")" = "401" ] || fail "anonymous invoice list should be 401"
@@ -137,6 +143,46 @@ paid=$(post_a "/api/invoices/$inv_id/payments" "{\"version\":$version,\"note\":\
 [ "$(echo "$paid" | jget invoice.paidCents)" = "51852" ] || fail "paid cents should be 51852: $paid"
 [ "$(curl -fsS "$BASE_URL/api/public/invoices/$new_token" | jget invoice.status)" = "paid" ] || fail "public page should show paid"
 pass "manual payment of the full balance marks the invoice paid"
+
+# ---------------------------------------------------------------------------
+# Payments: the payer pays through the share link only; the webhook refuses unsigned calls.
+# ---------------------------------------------------------------------------
+pay_draft=$(post_a /api/invoices "{\"clientId\":\"$client_id\",\"lines\":[{\"kind\":\"fixed\",\"description\":\"Logo refresh\",\"quantityX100\":100,\"unitPriceCents\":45000}]}") || fail "create second draft failed"
+pay_id=$(echo "$pay_draft" | jget invoice.id)
+pay_sent=$(post_a "/api/invoices/$pay_id/transition" "{\"to\":\"sent\",\"version\":$(echo "$pay_draft" | jget invoice.version)}") || fail "send second invoice failed"
+pay_token="$(echo "$pay_sent" | jget shareUrl)"; pay_token="${pay_token##*/i/}"
+
+pub_post() { curl -s -o "$2" -w '%{http_code}' -X POST -H 'content-type: application/json' -H "origin: ${3:-$BASE_URL}" -d "${4:-{\}}" "$BASE_URL$1"; }
+body_file=$(mktemp); trap 'rm -f "$JAR_A" "$JAR_B" "$pub_headers" "$body_file"' EXIT
+
+[ "$(pub_post "/i/$pay_token/checkout" "$body_file" https://evil.example)" = "403" ] || fail "cross-origin checkout should be 403"
+[ "$(pub_post "/i/$pay_token/checkout" "$body_file" "$BASE_URL" '{"amountCents":1}')" = "400" ] || fail "checkout must not accept an amount"
+[ "$(pub_post "/i/$(printf 'a%.0s' $(seq 43))/checkout" "$body_file")" = "404" ] || fail "checkout on an unknown token should be 404"
+[ "$(pub_post "/i/$new_token/checkout" "$body_file")" = "409" ] || fail "checkout on a paid invoice should be 409"
+
+if [ "$payments_mode" = "demo" ]; then
+  [ "$(pub_post "/i/$pay_token/checkout" "$body_file")" = "200" ] || fail "demo checkout failed: $(cat "$body_file")"
+  [ "$(jget provider < "$body_file")" = "demo" ] || fail "checkout should pick the demo provider: $(cat "$body_file")"
+  [ "$(jget url < "$body_file")" = "$BASE_URL/i/$pay_token/demo-pay" ] || fail "demo checkout url unexpected: $(cat "$body_file")"
+  [ "$(curl -fsS "$BASE_URL/api/public/invoices/$pay_token" | jget invoice.status)" = "sent" ] || fail "starting checkout must not mark the invoice paid"
+  [ "$(pub_post "/api/public/invoices/$pay_token/demo-pay" "$body_file" https://evil.example)" = "403" ] || fail "cross-origin demo-pay should be 403"
+  [ "$(pub_post "/api/public/invoices/$pay_token/demo-pay" "$body_file")" = "200" ] || fail "demo pay failed: $(cat "$body_file")"
+  [ "$(curl -fsS "$BASE_URL/api/public/invoices/$pay_token" | jget invoice.status)" = "paid" ] || fail "demo pay should mark the invoice paid"
+  [ "$(pub_post "/api/public/invoices/$pay_token/demo-pay" "$body_file")" = "409" ] || fail "a second demo pay should be 409"
+  paid_a=$(curl -fsS -b "$JAR_A" "$BASE_URL/api/invoices/$pay_id")
+  [ "$(echo "$paid_a" | jget invoice.status)" = "paid" ] || fail "owner should see the invoice paid: $paid_a"
+  [ "$(echo "$paid_a" | jget payments.0.method)" = "demo" ] || fail "payment should be a demo payment: $paid_a"
+  [ "$(echo "$paid_a" | jget payments.0.amountCents)" = "45000" ] || fail "demo payment should be the full balance: $paid_a"
+  [ "$(echo "$paid_a" | jget payments.1)" = "" ] || fail "demo pay should record exactly one payment: $paid_a"
+  pass "payer opens checkout, confirms the demo payment: invoice paid once, for the full balance"
+else
+  [ "$(pub_post "/api/public/invoices/$pay_token/demo-pay" "$body_file")" = "404" ] || fail "demo pay must be off when Stripe is configured"
+  pass "Stripe configured: demo pay is off"
+fi
+
+[ "$(status -X POST -H 'content-type: application/json' -H 'stripe-signature: t=1,v1=0000000000000000000000000000000000000000000000000000000000000000' -d '{"id":"evt_smoke","type":"checkout.session.completed","livemode":false,"data":{"object":{}}}' "$BASE_URL/api/stripe/webhook")" = "400" ] || fail "webhook with a bad signature should be 400"
+[ "$(status -X POST -H 'content-type: application/json' -d '{}' "$BASE_URL/api/stripe/webhook")" = "400" ] || fail "webhook without a signature should be 400"
+pass "webhook refuses a bad or missing signature"
 
 code=$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -H "origin: $BASE_URL" \
   -d '{"notes":"6h","clientRateCents":10000}' "$BASE_URL/api/invoices/draft-from-notes")

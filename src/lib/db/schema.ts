@@ -81,7 +81,7 @@ export const INVOICE_STATUSES = ["draft", "sent", "paid", "void"] as const;
 export const LINE_KINDS = ["hours", "fixed", "expense"] as const;
 export const LINE_SOURCES = ["manual", "ai"] as const;
 export const PAYMENT_METHODS = ["demo", "stripe", "manual"] as const;
-export const PAYMENT_FLAGS = ["amount_mismatch", "invoice_void"] as const;
+export const PAYMENT_FLAGS = ["amount_mismatch", "invoice_void", "duplicate_payment"] as const;
 
 const timestamptz = (name: string) => timestamp(name, { withTimezone: true });
 const cents = (name: string) => bigint(name, { mode: "number" });
@@ -300,10 +300,13 @@ export const rateEvent = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
     kind: text("kind", { enum: RATE_KINDS }).notNull(),
+    /** What the attempt was about when a limit is per thing rather than per user (checkout: the invoice id). */
+    subject: text("subject"),
     at: timestamp("at", { withTimezone: true, precision: 3 }).notNull().defaultNow(),
   },
   (t) => [
     index("rate_event_user_kind_at_idx").on(t.userId, t.kind, t.at),
+    index("rate_event_subject_idx").on(t.kind, t.subject, t.at),
     check("rate_event_kind_chk", sql`${t.kind} in (${list(RATE_KINDS)})`),
   ],
 );

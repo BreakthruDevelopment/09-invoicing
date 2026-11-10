@@ -12,3 +12,10 @@ export type IdContext = { params: Promise<{ id: string }> };
 export function shareUrl(token: string): string {
   return `${new URL(env().APP_URL).origin}/i/${token}`;
 }
+
+/** Headers for the public (share-token) routes: never cached, never leaks the link in a Referer, never indexed. */
+export const PUBLIC_HEADERS = {
+  "Cache-Control": "private, no-store",
+  "Referrer-Policy": "no-referrer",
+  "X-Robots-Tag": "noindex",
+} as const;

@@ -1,0 +1,2 @@
+ALTER TABLE "payment" DROP CONSTRAINT "payment_flag_chk";--> statement-breakpoint
+ALTER TABLE "payment" ADD CONSTRAINT "payment_flag_chk" CHECK ("payment"."flag" is null or "payment"."flag" in ('amount_mismatch', 'invoice_void', 'duplicate_payment'));
