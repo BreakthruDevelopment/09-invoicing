@@ -33,8 +33,9 @@ export async function createClient(actor: Actor, raw: unknown): Promise<ClientVi
   assertCan(actor, "create");
   const input = clientInput.parse(raw);
   return writeTx(actor, async (tx) => {
-    const [{ n }] = await tx.select({ n: count() }).from(client).where(ownedBy(client, actor, isNull(client.archivedAt)));
-    if (n >= MAX_CLIENTS_PER_USER) throw new ConflictError(`You can have up to ${MAX_CLIENTS_PER_USER} clients. Archive one first.`);
+    // Archived clients count too: archiving frees nothing, so create-archive loops can't grow the table.
+    const [{ n }] = await tx.select({ n: count() }).from(client).where(ownedBy(client, actor));
+    if (n >= MAX_CLIENTS_PER_USER) throw new ConflictError(`You can have up to ${MAX_CLIENTS_PER_USER} clients (archived ones count).`);
     const [row] = await tx.insert(client).values({ ...input, ownerId: actor.id }).returning();
     return row;
   });

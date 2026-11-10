@@ -300,10 +300,13 @@ export const rateEvent = pgTable(
       .notNull()
       .references(() => user.id, { onDelete: "cascade" }),
     kind: text("kind", { enum: RATE_KINDS }).notNull(),
+    /** What the attempt was about when a limit is per thing rather than per user (checkout: the invoice id). */
+    subject: text("subject"),
     at: timestamp("at", { withTimezone: true, precision: 3 }).notNull().defaultNow(),
   },
   (t) => [
     index("rate_event_user_kind_at_idx").on(t.userId, t.kind, t.at),
+    index("rate_event_subject_idx").on(t.kind, t.subject, t.at),
     check("rate_event_kind_chk", sql`${t.kind} in (${list(RATE_KINDS)})`),
   ],
 );

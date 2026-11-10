@@ -1,5 +1,6 @@
 import { pingDb } from "@/lib/db";
 import { migrationState } from "@/lib/db/migrate-on-start";
+import { paymentsMode } from "@/lib/payments/config";
 
 export const dynamic = "force-dynamic";
 
@@ -18,6 +19,8 @@ export async function GET() {
     app: process.env.APP_NAME ?? "30-apps-template",
     version: process.env.APP_VERSION ?? "dev",
     cloud: process.env.CLOUD ?? "local",
+    // "demo" or "stripe" (test mode); a mode name only, never a key.
+    payments: paymentsMode(),
     checks: {
       database: dbOk ? "ok" : "unreachable",
       ...(migrations && migrations !== "skipped" ? { migrations: migrationsOk ? "ok" : migrations } : {}),

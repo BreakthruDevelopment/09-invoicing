@@ -249,6 +249,8 @@ export async function transitionInvoice(actor: Actor, id: string, raw: unknown):
 
     // draft -> sent
     if (!row.clientId) throw new UnprocessableError("Choose a client before sending.");
+    // An archived client can't be billed anymore. Checked before the number is taken, so a refusal burns no number.
+    await assertUsableClient(tx, actor, row.clientId);
     const lines = await tx.select().from(invoiceLine).where(eq(invoiceLine.invoiceId, row.id)).orderBy(asc(invoiceLine.position));
     const totals = computeTotals(lines, row.taxBp); // recomputed from the stored lines, never trusted from the row
     if (lines.length === 0 || totals.totalCents <= 0) throw new UnprocessableError("Add at least one line with an amount before sending.");
@@ -286,8 +288,13 @@ export async function transitionInvoice(actor: Actor, id: string, raw: unknown):
 export type PaymentParams = { method: "demo" | "stripe" | "manual"; note?: string; stripeSessionId?: string; expectedVersion?: number };
 
 /**
- * Record the full balance and mark a sent invoice paid, in the caller's transaction with the row already locked.
- * Shared by the owner's manual record and (issue 9.2) the demo provider and the signed webhook.
+ * Record the full balance and mark a sent invoice paid, in the caller's transaction with the row already locked
+ * (`select ... for update`). Shared by the owner's manual record, the demo provider and the signed Stripe webhook.
+ *
+ * This function trusts its caller. It does NOT check who is asking or what was actually paid: it always records the
+ * invoice's whole balance. Callers must first verify ownership (an owner via `loadOwned`, a payer via the share
+ * token, Stripe via the verified signature) and, for money from outside, that the amount and currency equal the
+ * balance. It does check the status (`sent` only) and, when given, `expectedVersion`.
  */
 export async function markPaidInTx(tx: Tx, row: Invoice, params: PaymentParams): Promise<void> {
   if (row.status !== "sent") throw new ConflictError(`A ${row.status} invoice can't take a payment.`);

@@ -300,6 +300,21 @@ describe.skipIf(!url)("invoicing data layer (Postgres)", () => {
       await expect(invoices.recordManualPayment(alice, d.invoice.id, { version: r.detail.invoice.version })).resolves.toBeTruthy();
     });
 
+    it("sending a draft whose client was archived is refused (409) before a number is taken", async () => {
+      const d = await draft();
+      await clients.archiveClient(alice, d.invoice.clientId!);
+      await expect(invoices.transitionInvoice(alice, d.invoice.id, { to: "sent", version: d.invoice.version })).rejects.toMatchObject({ status: 409 });
+      const after = await invoices.getInvoice(alice, d.invoice.id);
+      expect(after.invoice).toMatchObject({ status: "draft", number: null, hasShareLink: false });
+      const rows = await sql`select next_number as next from business_profile where owner_id = ${alice.id}`;
+      expect(rows[0]?.next ?? 1).toBe(1);
+      // Voiding the draft is still allowed, and an active client still sends as INV-0001.
+      const e = await draft();
+      const sentOk = await invoices.transitionInvoice(alice, e.invoice.id, { to: "sent", version: e.invoice.version });
+      expect(sentOk.detail.invoice.number).toBe("INV-0001");
+      await expect(invoices.transitionInvoice(alice, d.invoice.id, { to: "void", version: d.invoice.version, reason: "client archived" })).resolves.toBeTruthy();
+    });
+
     it("two racing sends of the same invoice: exactly one wins, one number is used", async () => {
       const d = await draft();
       const results = await Promise.allSettled([1, 2, 3, 4].map(() => invoices.transitionInvoice(alice, d.invoice.id, { to: "sent", version: d.invoice.version })));
@@ -539,6 +554,17 @@ describe.skipIf(!url)("invoicing data layer (Postgres)", () => {
       const n = await before();
       await expect(invoices.updateInvoice(alice, d.invoice.id, { version: 99, memo: "x" })).rejects.toMatchObject({ status: 409 });
       expect(await before()).toBe(n);
+    });
+
+    it("the 200-client cap counts archived clients too, so archiving frees no slot", async () => {
+      await sql`insert into client (owner_id, name, archived_at) select ${alice.id}, 'old' || g, now() from generate_series(1, 150) g`;
+      await sql`insert into client (owner_id, name) select ${alice.id}, 'c' || g from generate_series(1, 50) g`;
+      await expect(newClient(alice)).rejects.toMatchObject({ status: 409 });
+      const [active] = await clients.listClients(alice);
+      await clients.archiveClient(alice, active.id);
+      await expect(newClient(alice)).rejects.toMatchObject({ status: 409 });
+      await sql`delete from client where owner_id = ${alice.id} and name = 'old1'`;
+      await expect(newClient(alice)).resolves.toBeTruthy();
     });
 
     it("at most 200 active clients and 2,000 invoices", async () => {

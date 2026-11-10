@@ -1,5 +1,5 @@
 import "server-only";
-import { and, count, eq, gt, sql } from "drizzle-orm";
+import { and, count, eq, gt, isNull, sql } from "drizzle-orm";
 import { type Db, db, schema } from "@/lib/db";
 import { TooManyRequestsError } from "@/lib/errors";
 
@@ -63,10 +63,12 @@ export async function consumeRate(
   kind: RateKind,
   limit: number,
   message: string,
-  opts: { windowSeconds?: number; now?: Date } = {},
+  opts: { windowSeconds?: number; now?: Date; subject?: string } = {},
 ): Promise<void> {
   const { rateEvent } = schema;
-  await advisoryLock(tx, `rate:${kind}:${userId}`);
+  // `subject` makes the limit per thing (one invoice) instead of per user; without it only subject-less rows count.
+  const subjectIs = opts.subject === undefined ? isNull(rateEvent.subject) : eq(rateEvent.subject, opts.subject);
+  await advisoryLock(tx, opts.subject === undefined ? `rate:${kind}:${userId}` : `rate:${kind}:${userId}:${opts.subject}`);
   const windowSeconds = opts.windowSeconds ?? HOUR_SECONDS;
   // `now` is a parameter so tests can pin the clock; production passes nothing and the database decides.
   const nowSql = opts.now ? sql`${opts.now.toISOString()}::timestamptz` : sql`now()`;
@@ -74,13 +76,13 @@ export async function consumeRate(
   // Rows past the window can never count again.
   await tx
     .delete(rateEvent)
-    .where(and(eq(rateEvent.userId, userId), eq(rateEvent.kind, kind), sql`${rateEvent.at} <= ${nowSql} - ${window}`));
+    .where(and(eq(rateEvent.userId, userId), eq(rateEvent.kind, kind), subjectIs, sql`${rateEvent.at} <= ${nowSql} - ${window}`));
   const [{ n }] = await tx
     .select({ n: count() })
     .from(rateEvent)
-    .where(and(eq(rateEvent.userId, userId), eq(rateEvent.kind, kind), gt(rateEvent.at, sql`${nowSql} - ${window}`)));
+    .where(and(eq(rateEvent.userId, userId), eq(rateEvent.kind, kind), subjectIs, gt(rateEvent.at, sql`${nowSql} - ${window}`)));
   if (n >= limit) throw new TooManyRequestsError(message);
-  await tx.insert(rateEvent).values({ userId, kind, ...(opts.now ? { at: opts.now } : {}) });
+  await tx.insert(rateEvent).values({ userId, kind, subject: opts.subject ?? null, ...(opts.now ? { at: opts.now } : {}) });
 }
 
 /** Undo one `consumeRate` (the newest row) when the work it paid for never happened. */
