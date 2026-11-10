@@ -200,3 +200,33 @@ describe("applyInvoiceGuardrails: injection", () => {
     expect(JSON.stringify(r.dropped)).not.toContain("abc");
   });
 });
+
+describe("applyInvoiceGuardrails: every kept line is acceptable to the invoice line rules", () => {
+  it("drops a unit price above the limit (a stated hourly rate of $200,000)", () => {
+    const r = run(["0.01h at $200,000/hr"], [line({ quantity: 0.01, evidence: "0.01h at $200,000/hr" })]);
+    expect(r.lines).toEqual([]);
+    expect(codes(r)).toEqual(["bad_price"]);
+  });
+  it("keeps a price exactly at the limit", () => {
+    const r = run(["0.01h at $100,000/hr"], [line({ quantity: 0.01, evidence: "0.01h at $100,000/hr" })]);
+    expect(codes(r)).toEqual([]);
+    expect(r.lines[0].unitPriceCents).toBe(10_000_000);
+  });
+  it("drops a blank description and one with control characters", () => {
+    const r = run(["2h review"], [line({ description: "   ", quantity: 2, evidence: "2h" }), line({ description: "Review\u0007bell", quantity: 2, evidence: "2h" })]);
+    expect(r.lines).toEqual([]);
+    expect(codes(r)).toEqual(["bad_description", "bad_description"]);
+  });
+  it("trims the description it keeps, and everything kept passes lineInput", async () => {
+    const { lineInput } = await import("@/lib/invoice-schemas");
+    const r = run(["2h review", "flat fee $450"], [
+      line({ description: "  Review  ", quantity: 2, evidence: "2h" }),
+      line({ kind: "fixed", description: "Fee", quantity: 1, unitPriceCents: 45_000, sourceLines: ["L2"], evidence: "$450" }),
+    ]);
+    expect(r.lines).toHaveLength(2);
+    expect(r.lines[0].description).toBe("Review");
+    for (const l of r.lines) {
+      expect(() => lineInput.parse({ kind: l.kind, description: l.description, quantityX100: l.quantityX100, unitPriceCents: l.unitPriceCents, source: "ai" })).not.toThrow();
+    }
+  });
+});

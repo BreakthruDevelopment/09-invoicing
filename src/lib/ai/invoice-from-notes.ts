@@ -111,11 +111,16 @@ function describeFromNotes(model: InvoiceDraftModelOutput, noteLines: readonly s
   };
 }
 
+/** What `invoiceFromNotesDetailed` returns besides the draft: the model answer exactly as the guardrails saw it. */
+export type InvoiceTaskResult = { draft: InvoiceDraft; model: InvoiceDraftModelOutput };
+
 /**
  * Notes in, verified draft lines out. One `generate()` call, no tools; the guardrails then keep only lines the
- * notes support, and the subtotal is computed here, never taken from the model.
+ * notes support, and the subtotal is computed here, never taken from the model. Also returns the model answer
+ * (after the demo re-description) so the caller can store it and re-run the guardrails later; that answer is
+ * server-side only and never goes to the browser.
  */
-export async function invoiceFromNotes(raw: unknown): Promise<InvoiceDraft> {
+export async function invoiceFromNotesDetailed(raw: unknown): Promise<InvoiceTaskResult> {
   const input = invoiceFromNotesInput.parse(raw);
   const noteLines = splitNotes(input.notes);
   const result = await generate({
@@ -129,13 +134,20 @@ export async function invoiceFromNotes(raw: unknown): Promise<InvoiceDraft> {
   const model = result.demo ? describeFromNotes(result.data, noteLines) : result.data;
   const checked = applyInvoiceGuardrails(model, { noteLines, clientRateCents: input.clientRateCents });
   return {
-    lines: checked.lines,
-    subtotalCents: sumCents(checked.lines.map((l) => l.amountCents)),
-    assumptions: checked.assumptions,
-    unbillable: checked.unbillable,
-    dropped: checked.dropped,
-    demo: result.demo,
+    model,
+    draft: {
+      lines: checked.lines,
+      subtotalCents: sumCents(checked.lines.map((l) => l.amountCents)),
+      assumptions: checked.assumptions,
+      unbillable: checked.unbillable,
+      dropped: checked.dropped,
+      demo: result.demo,
+    },
   };
+}
+
+export async function invoiceFromNotes(raw: unknown): Promise<InvoiceDraft> {
+  return (await invoiceFromNotesDetailed(raw)).draft;
 }
 
 /** Notes the recorded demo answer was written for; 9.1's demo seed can import this so the fixture lines verify. */

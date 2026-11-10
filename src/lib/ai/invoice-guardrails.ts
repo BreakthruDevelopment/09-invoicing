@@ -1,5 +1,5 @@
 import type { InvoiceDraftModelOutput } from "./invoice-from-notes";
-import { lineAmountCents } from "@/lib/money";
+import { MAX_UNIT_PRICE_CENTS, lineAmountCents } from "@/lib/money";
 
 /** A line is dropped above this amount ($50,000) or at $0. */
 export const MAX_LINE_AMOUNT_CENTS = 5_000_000;
@@ -12,6 +12,8 @@ export type DropCode =
   | "bad_quantity"
   | "digit_rule"
   | "no_price"
+  | "bad_description"
+  | "bad_price"
   | "amount_zero"
   | "amount_over_cap"
   | "duplicate";
@@ -44,6 +46,8 @@ const REASONS: Record<DropCode, string> = {
   bad_quantity: "the quantity isn't a usable amount",
   digit_rule: "the quantity isn't stated in the evidence",
   no_price: "no price found in the cited note lines",
+  bad_description: "the description is blank or has control characters",
+  bad_price: "the unit price is above the $100,000 limit",
   amount_zero: "the amount is $0",
   amount_over_cap: "the amount is above $50,000",
   duplicate: "the same work is already on another line",
@@ -184,6 +188,10 @@ export function applyInvoiceGuardrails(
   };
 
   for (const m of model.lines) {
+    if (m.description.trim().length === 0 || /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/.test(m.description)) {
+      drop("bad_description", m.description.replace(/[\u0000-\u001f\u007f]/g, " "));
+      continue;
+    }
     const indexes = m.sourceLines.map((s) => Number(s.slice(1)));
     if (indexes.some((n) => n < 1 || n > ctx.noteLines.length)) {
       drop("bad_citation", m.description);
@@ -233,6 +241,11 @@ export function applyInvoiceGuardrails(
       continue;
     }
 
+    // Whatever survives must be accepted by the invoice line rules at add time (`lineInput`), so refuse it here.
+    if (unitPriceCents > MAX_UNIT_PRICE_CENTS) {
+      drop("bad_price", m.description);
+      continue;
+    }
     const amountCents = lineAmountCents(quantityX100, unitPriceCents);
     if (amountCents === 0) {
       drop("amount_zero", m.description);
@@ -260,7 +273,7 @@ export function applyInvoiceGuardrails(
 
     lines.push({
       kind: m.kind,
-      description: m.description,
+      description: m.description.trim(),
       quantityX100,
       unitPriceCents,
       amountCents,
