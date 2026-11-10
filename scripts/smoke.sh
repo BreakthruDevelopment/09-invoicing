@@ -71,6 +71,21 @@ code=$(curl -s -o /dev/null -w '%{http_code}' -X POST -b "$JAR_A" -H "origin: $B
 [ "$code" = "200" ] || fail "AI summary should be 200, got $code"
 pass "AI summary responds"
 
+code=$(curl -s -o /dev/null -w '%{http_code}' -H 'content-type: application/json' -H "origin: $BASE_URL" \
+  -d '{"notes":"6h","clientRateCents":10000}' "$BASE_URL/api/invoices/draft-from-notes")
+[ "$code" = "401" ] || fail "anonymous draft-from-notes should be 401, got $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_A" -H 'content-type: application/json' -H 'origin: https://evil.example' \
+  -d '{"notes":"6h","clientRateCents":10000}' "$BASE_URL/api/invoices/draft-from-notes")
+[ "$code" = "403" ] || fail "cross-origin draft-from-notes should be 403, got $code"
+code=$(curl -s -o /dev/null -w '%{http_code}' -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" \
+  -d '{"notes":"","clientRateCents":10000}' "$BASE_URL/api/invoices/draft-from-notes")
+[ "$code" = "400" ] || fail "empty notes should be 400, got $code"
+draft=$(curl -fsS -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" \
+  -d '{"notes":"Homepage redesign: 6h on layout and responsive fixes\nLogo refresh, flat fee $450","clientRateCents":10000}' \
+  "$BASE_URL/api/invoices/draft-from-notes") || fail "draft-from-notes failed"
+echo "$draft" | grep -q '"subtotalCents":105000' || fail "draft subtotal should be 105000 (computed server-side), got: $draft"
+pass "draft from notes: auth, origin, validation and server-computed subtotal"
+
 code=$(curl -s -o /dev/null -w '%{http_code}' -X DELETE -b "$JAR_A" -H "origin: $BASE_URL" "$BASE_URL/api/items/$id")
 [ "$code" = "204" ] || fail "owner delete should be 204, got $code"
 pass "owner deleted their item"
