@@ -81,7 +81,7 @@ export const INVOICE_STATUSES = ["draft", "sent", "paid", "void"] as const;
 export const LINE_KINDS = ["hours", "fixed", "expense"] as const;
 export const LINE_SOURCES = ["manual", "ai"] as const;
 export const PAYMENT_METHODS = ["demo", "stripe", "manual"] as const;
-export const PAYMENT_FLAGS = ["amount_mismatch", "invoice_void"] as const;
+export const PAYMENT_FLAGS = ["amount_mismatch", "invoice_void", "duplicate_payment"] as const;
 
 const timestamptz = (name: string) => timestamp(name, { withTimezone: true });
 const cents = (name: string) => bigint(name, { mode: "number" });

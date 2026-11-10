@@ -36,6 +36,13 @@
       "when": 1794327811569,
       "tag": "0004_rate-event-subject",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1794329291851,
+      "tag": "0005_duplicate-payment-flag",
+      "breakpoints": true
     }
   ]
 }

@@ -6,7 +6,7 @@ import { BadRequestError } from "@/lib/errors";
 import { markPaidInTx } from "@/lib/invoices";
 import { log } from "@/lib/log";
 import { paymentsConfig } from "./config";
-import { CURRENCY, invoiceRef } from "./invoice-ref";
+import { invoiceRef } from "./invoice-ref";
 import { verifyStripeSignature } from "./signature";
 
 const { invoice, payment, stripeEvent } = schema;
@@ -44,7 +44,7 @@ const rejected = (error: string): WebhookResult => ({ status: 400, body: { error
  * and with the demo provider), and then:
  *  - payment_status other than "paid": ignored;
  *  - invoice void: a flagged `invoice_void` payment (money arrived; the owner must refund), never paid;
- *  - invoice already paid (a manual payment won the race): no second payment row; a warning with the invoice id;
+ *  - invoice already paid (a manual payment won the race, or a second session): a flagged `duplicate_payment` row;
  *  - currency not usd, amount not equal to the balance, or the metadata hash not ours: a flagged `amount_mismatch`
  *    payment, the invoice stays `sent`;
  *  - otherwise the balance is recorded and the invoice becomes paid.
@@ -105,9 +105,19 @@ export async function handleStripeWebhook(rawBody: Buffer, signatureHeader: stri
     const currency = (sess.currency ?? "").toLowerCase().replace(/[^a-z]/g, "");
 
     if (row.status === "paid") {
-      // The owner (or the demo provider) got there first. Recording a second payment would put two on one invoice.
-      log.warn("stripe.payment_on_paid_invoice", { eventId: event.id, invoiceId: row.id });
-      return "ignored";
+      // Paid already (a manual payment won the race, or a second session after a link rotation). The card money is
+      // real, so keep it as a flagged row the owner can see and refund; it never changes the invoice.
+      await tx.insert(payment).values({
+        invoiceId: row.id,
+        ownerId: row.ownerId,
+        method: "stripe",
+        amountCents: amount,
+        stripeSessionId: sess.id,
+        flag: "duplicate_payment",
+        note: "Paid by card after the invoice was already paid. Refund it in Stripe.",
+      });
+      log.warn("stripe.payment_flagged", { invoiceId: row.id, flag: "duplicate_payment" });
+      return "flagged";
     }
     if (row.status === "void") {
       await tx.insert(payment).values({
@@ -124,7 +134,7 @@ export async function handleStripeWebhook(rawBody: Buffer, signatureHeader: stri
     }
 
     const balance = row.totalCents - row.paidCents;
-    const matches = currency === CURRENCY && amount === balance && sess.metadata?.invoice_hash === invoiceRef(row);
+    const matches = sess.currency === "usd" && amount === balance && sess.metadata?.invoice_hash === invoiceRef(row);
     if (!matches) {
       await tx.insert(payment).values({
         invoiceId: row.id,

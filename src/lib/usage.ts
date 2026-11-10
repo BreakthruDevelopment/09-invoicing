@@ -86,12 +86,13 @@ export async function consumeRate(
 }
 
 /** Undo one `consumeRate` (the newest row) when the work it paid for never happened. */
-export async function releaseRate(tx: Tx, userId: string, kind: RateKind): Promise<void> {
+export async function releaseRate(tx: Tx, userId: string, kind: RateKind, opts: { subject?: string } = {}): Promise<void> {
   // Same lock as consumeRate: two concurrent refunds must not both pick the same newest row.
-  await advisoryLock(tx, `rate:${kind}:${userId}`);
+  await advisoryLock(tx, opts.subject === undefined ? `rate:${kind}:${userId}` : `rate:${kind}:${userId}:${opts.subject}`);
+  const subjectIs = opts.subject === undefined ? sql`subject is null` : sql`subject = ${opts.subject}`;
   await tx.execute(sql`
     delete from rate_event where id = (
-      select id from rate_event where user_id = ${userId} and kind = ${kind} order by at desc limit 1
+      select id from rate_event where user_id = ${userId} and kind = ${kind} and ${subjectIs} order by at desc limit 1
     )
   `);
 }

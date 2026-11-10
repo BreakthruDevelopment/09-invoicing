@@ -61,6 +61,17 @@ describe.skipIf(!url)("rate limits (Postgres)", () => {
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(2);
   });
 
+  it("releaseRate with a subject undoes only that subject's newest attempt", async () => {
+    await sql`insert into "user" (id, name, email) values ('use-f', 'f', 'use-f@test.local') on conflict do nothing`;
+    const run = (subject?: string) => database.transaction((tx) => usage.consumeRate(tx, "use-f", "checkout", 5, "slow", { subject }));
+    await run("a");
+    await run("b");
+    await run("b");
+    await database.transaction((tx) => usage.releaseRate(tx, "use-f", "checkout", { subject: "b" }));
+    const rows = await sql`select subject, count(*)::int as n from rate_event where user_id = 'use-f' group by subject order by subject`;
+    expect(rows.map((r) => [r.subject, r.n])).toEqual([["a", 1], ["b", 1]]);
+  });
+
   it("releaseRate undoes the newest attempt", async () => {
     await sql`insert into "user" (id, name, email) values ('use-c', 'c', 'use-c@test.local') on conflict do nothing`;
     await database.transaction((tx) => usage.consumeRate(tx, "use-c", "checkout", 1, "slow"));

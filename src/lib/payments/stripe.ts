@@ -6,6 +6,9 @@ import { CURRENCY, invoiceRef } from "./invoice-ref";
 
 const STRIPE_SESSIONS_URL = "https://api.stripe.com/v1/checkout/sessions";
 const TIMEOUT_MS = 8_000;
+const EXPIRY_WINDOW_SECONDS = 1800;
+/** Stripe refuses a card charge under 50 cents (USD). */
+export const MIN_STRIPE_AMOUNT_CENTS = 50;
 
 const sessionResponse = z.object({
   id: z.string().regex(/^cs_[A-Za-z0-9_]{1,250}$/),
@@ -30,6 +33,8 @@ export async function createStripeCheckout(
   appOrigin: string,
 ): Promise<{ url: string; sessionId: string }> {
   const back = `${appOrigin}/i/${token}`;
+  const window = Math.floor(Date.now() / 1000 / EXPIRY_WINDOW_SECONDS);
+  const expiresAt = (window + 3) * EXPIRY_WINDOW_SECONDS;
   const form = new URLSearchParams({
     mode: "payment",
     "payment_method_types[0]": "card",
@@ -39,6 +44,9 @@ export async function createStripeCheckout(
     "line_items[0][price_data][product_data][name]": `Invoice ${invoice.number ?? ""}`.trim(),
     "metadata[invoice_id]": invoice.id,
     "metadata[invoice_hash]": invoiceRef(invoice),
+    // Stripe's default is 24 h; an hour is plenty to pay. Aligned to 30-minute windows (60-90 min ahead) so a retry in the
+    // same window sends identical parameters and the idempotency key below stays valid.
+    expires_at: String(expiresAt),
     success_url: `${back}?payment=processing`,
     cancel_url: `${back}?payment=cancelled`,
   });
@@ -52,7 +60,7 @@ export async function createStripeCheckout(
         "Content-Type": "application/x-www-form-urlencoded",
         // The link's hash prefix keeps the key unique per link: Stripe rejects a reused key whose parameters changed,
         // and rotating the link changes the return URLs.
-        "Idempotency-Key": `invoice-${invoice.id}-v${invoice.version}-${(invoice.shareTokenHash ?? "").slice(0, 8)}`,
+        "Idempotency-Key": `invoice-${invoice.id}-v${invoice.version}-${(invoice.shareTokenHash ?? "").slice(0, 8)}-w${window}`,
       },
       body: form,
       signal: AbortSignal.timeout(TIMEOUT_MS),

@@ -1,5 +1,5 @@
 import "server-only";
-import { count } from "drizzle-orm";
+import { count, isNull } from "drizzle-orm";
 import { type Actor, ForbiddenError } from "@/lib/auth/rbac";
 import { db, schema } from "@/lib/db";
 import { env } from "@/lib/env";
@@ -21,7 +21,7 @@ export async function getAdminStats(actor: Actor): Promise<AdminStats> {
   const [[{ users }], statuses, methods, callsToday] = await Promise.all([
     db().select({ users: count() }).from(schema.user),
     db().select({ k: schema.invoice.status, n: count() }).from(schema.invoice).groupBy(schema.invoice.status),
-    db().select({ k: schema.payment.method, n: count() }).from(schema.payment).groupBy(schema.payment.method),
+    db().select({ k: schema.payment.method, n: count() }).from(schema.payment).where(isNull(schema.payment.flag)).groupBy(schema.payment.method),
     dailyCount("ai"),
   ]);
   const zero = <K extends string>(keys: readonly K[]) => Object.fromEntries(keys.map((k) => [k, 0])) as Record<K, number>;

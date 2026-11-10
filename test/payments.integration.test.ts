@@ -90,11 +90,11 @@ describe.skipIf(!url)("payments (Postgres)", () => {
   });
 
   /** A sent invoice (total 35,000 cents) and its share token. */
-  async function sentInvoice(over: { unitPriceCents?: number } = {}) {
+  async function sentInvoice(over: { unitPriceCents?: number; quantityX100?: number } = {}) {
     const c = await clients.createClient(alice, { name: "Northwind", hourlyRateCents: 10_000 });
     const d = await invoices.createInvoice(alice, {
       clientId: c.id,
-      lines: [{ kind: "hours", description: "Design", quantityX100: 350, unitPriceCents: over.unitPriceCents ?? 10_000 }],
+      lines: [{ kind: "hours", description: "Design", quantityX100: over.quantityX100 ?? 350, unitPriceCents: over.unitPriceCents ?? 10_000 }],
     });
     const s = await invoices.transitionInvoice(alice, d.invoice.id, { to: "sent", version: d.invoice.version });
     return { id: d.invoice.id, token: s.shareToken!, total: s.detail.invoice.totalCents, number: s.detail.invoice.number!, version: s.detail.invoice.version };
@@ -277,7 +277,7 @@ describe.skipIf(!url)("payments (Postgres)", () => {
       expect(calledUrl).toBe("https://api.stripe.com/v1/checkout/sessions");
       const headers = init.headers as Record<string, string>;
       expect(headers.Authorization).toBe(`Bearer ${SECRET_KEY}`);
-      expect(headers["Idempotency-Key"]).toMatch(new RegExp(`^invoice-${i.id}-v${i.version}-[0-9a-f]{8}$`));
+      expect(headers["Idempotency-Key"]).toMatch(new RegExp(`^invoice-${i.id}-v${i.version}-[0-9a-f]{8}-w\\d+$`));
       expect(init.signal).toBeDefined();
       const form = new URLSearchParams(String(init.body));
       expect(form.get("mode")).toBe("payment");
@@ -294,6 +294,46 @@ describe.skipIf(!url)("payments (Postgres)", () => {
       expect((await state(i.id)).status).toBe("sent");
       expect(await payments(i.id)).toHaveLength(0);
       expect(logs.join("\n")).not.toContain(SECRET_KEY);
+    });
+
+    it("sets the session to expire in about an hour, with stable parameters inside a window", async () => {
+      setStripe(true);
+      const i = await sentInvoice();
+      const fetchFn = stub(() => okSession());
+      await routes.checkout.POST(post({}), ctx(i.token));
+      await routes.checkout.POST(post({}), ctx(i.token));
+      const [a, b] = fetchFn.mock.calls.map((c) => c[1] as RequestInit);
+      const exp = Number(new URLSearchParams(String(a.body)).get("expires_at"));
+      const ahead = exp - Date.now() / 1000;
+      expect(ahead).toBeGreaterThanOrEqual(3600 - 5);
+      expect(ahead).toBeLessThanOrEqual(5400 + 5);
+      expect(String(b.body)).toBe(String(a.body)); // same window: identical parameters, so the idempotency key is valid
+    });
+
+    it("refuses a balance under 50 cents with a clear 422 (no Stripe call, no attempt used); demo still allows it", async () => {
+      const tiny = await sentInvoice({ unitPriceCents: 40, quantityX100: 100 });
+      setStripe(true);
+      const fetchFn = stub(() => okSession());
+      const res = await routes.checkout.POST(post({}), ctx(tiny.token));
+      expect(res.status).toBe(422);
+      expect((await res.json()).error).toMatch(/\$0\.50/);
+      expect(fetchFn).not.toHaveBeenCalled();
+      const [{ n }] = await sql`select count(*)::int as n from rate_event where user_id = ${alice.id} and kind = 'checkout'`;
+      expect(n).toBe(0);
+      setStripe(false);
+      expect((await routes.checkout.POST(post({}), ctx(tiny.token))).status).toBe(200);
+    });
+
+    it("a failed Stripe call gives the attempt back, so failures never use up the 5 per hour", async () => {
+      setStripe(true);
+      const i = await sentInvoice();
+      stub(() => Response.json({ error: { type: "api_error" } }, { status: 500 }));
+      for (let n = 0; n < 7; n++) expect((await routes.checkout.POST(post({}), ctx(i.token))).status).toBe(502);
+      const [{ n }] = await sql`select count(*)::int as n from rate_event where user_id = ${alice.id} and kind = 'checkout'`;
+      expect(n).toBe(0);
+      stub(() => okSession());
+      for (let k = 0; k < 5; k++) expect((await routes.checkout.POST(post({}), ctx(i.token))).status).toBe(200);
+      expect((await routes.checkout.POST(post({}), ctx(i.token))).status).toBe(429);
     });
 
     it("a Stripe error, a timeout and an off-host URL all become a safe 502, with no secrets logged", async () => {
@@ -495,6 +535,40 @@ describe.skipIf(!url)("payments (Postgres)", () => {
       expect(all).toContain("invoice.paid");
     });
 
+    it("a second card payment (a new session) on an already-paid invoice is stored flagged duplicate_payment", async () => {
+      const i = await sentInvoice();
+      const first = await eventBody(i.id);
+      expect((await (await hook(first, signed(first))).json()).outcome).toBe("paid");
+      const second = await eventBody(i.id, { sessionId: "cs_test_second_session" });
+      expect(await (await hook(second, signed(second))).json()).toEqual({ received: true, outcome: "flagged" });
+      const rows = await payments(i.id);
+      expect(rows).toHaveLength(2);
+      expect(rows.filter((r) => r.flag === null)).toHaveLength(1);
+      const dup = rows.find((r) => r.flag === "duplicate_payment")!;
+      expect(dup.stripe_session_id).toBe("cs_test_second_session");
+      expect(Number(dup.amount_cents)).toBe(i.total);
+      const [{ note }] = await sql`select note from payment where invoice_id = ${i.id} and flag = 'duplicate_payment'`;
+      expect(note).toBe("Paid by card after the invoice was already paid. Refund it in Stripe.");
+      expect(await state(i.id)).toMatchObject({ status: "paid" });
+      expect(Number((await state(i.id)).paid_cents)).toBe(i.total);
+      // Replaying the second event changes nothing.
+      expect((await (await hook(second, signed(second))).json()).outcome).toBe("duplicate");
+      expect(await payments(i.id)).toHaveLength(2);
+    });
+
+    it("flagged payments are not counted under payments by method in the admin stats", async () => {
+      const stats = await import("@/lib/admin-stats");
+      const adminActor = { id: "pay-admin-x", role: "admin" as const };
+      const before = (await stats.getAdminStats(adminActor)).paymentsByMethod.stripe;
+      const i = await sentInvoice();
+      const bad = await eventBody(i.id, { amount: 1 });
+      await hook(bad, signed(bad));
+      expect((await stats.getAdminStats(adminActor)).paymentsByMethod.stripe).toBe(before);
+      const good = await eventBody(i.id);
+      await hook(good, signed(good));
+      expect((await stats.getAdminStats(adminActor)).paymentsByMethod.stripe).toBe(before + 1);
+    });
+
     it("a webhook racing the owner's manual payment records exactly one payment, whoever wins", async () => {
       for (let n = 0; n < 6; n++) {
         const i = await sentInvoice();
@@ -504,10 +578,19 @@ describe.skipIf(!url)("payments (Postgres)", () => {
         const [m, w] = await Promise.allSettled([manual, webhook]);
         expect(w.status).toBe("fulfilled");
         expect((w as PromiseFulfilledResult<Response>).value.status).toBe(200);
-        if (m.status === "rejected") expect(m.reason).toMatchObject({ status: 409 });
         const rows = await payments(i.id);
-        expect(rows).toHaveLength(1);
-        expect(rows[0].flag).toBeNull();
+        // Exactly one unflagged payment marks the invoice paid. If the manual payment won, the card money that
+        // still arrived is kept as one flagged duplicate_payment row; if the webhook won, the manual record was refused.
+        expect(rows.filter((r) => r.flag === null)).toHaveLength(1);
+        if (m.status === "fulfilled") {
+          expect(rows).toHaveLength(2);
+          expect(rows.filter((r) => r.flag === "duplicate_payment")).toHaveLength(1);
+          expect(rows.find((r) => r.flag === null)!.method).toBe("manual");
+        } else {
+          expect(m.reason).toMatchObject({ status: 409 });
+          expect(rows).toHaveLength(1);
+          expect(rows[0].method).toBe("stripe");
+        }
         expect(await state(i.id)).toMatchObject({ status: "paid" });
         expect(Number((await state(i.id)).paid_cents)).toBe(i.total);
       }
