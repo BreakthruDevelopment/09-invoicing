@@ -51,10 +51,10 @@ describe.skipIf(!url)("rate limits (Postgres)", () => {
 
   it("releaseRate undoes the newest attempt", async () => {
     await sql`insert into "user" (id, name, email) values ('use-c', 'c', 'use-c@test.local') on conflict do nothing`;
-    await database.transaction((tx) => usage.consumeRate(tx, "use-c", "upload", 1, "slow"));
-    expect(await usage.rateIsFull("use-c", "upload", 1)).toBe(true);
-    await database.transaction((tx) => usage.releaseRate(tx, "use-c", "upload"));
-    expect(await usage.rateIsFull("use-c", "upload", 1)).toBe(false);
+    await database.transaction((tx) => usage.consumeRate(tx, "use-c", "checkout", 1, "slow"));
+    expect(await usage.rateIsFull("use-c", "checkout", 1)).toBe(true);
+    await database.transaction((tx) => usage.releaseRate(tx, "use-c", "checkout"));
+    expect(await usage.rateIsFull("use-c", "checkout", 1)).toBe(false);
   });
 
   it("reserveDaily lets exactly `cap` of 20 parallel reservations through, and releaseDaily gives one back", async () => {

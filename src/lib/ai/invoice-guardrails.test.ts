@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { MAX_LINE_AMOUNT_CENTS, applyInvoiceGuardrails, pricesInText, timeRanges } from "./invoice-guardrails";
 import type { InvoiceDraftModelOutput } from "./invoice-from-notes";
-import { lineAmountCents, sumCents } from "./invoice-money";
+import { lineAmountCents, sumCents } from "@/lib/money";
 
 type ModelLine = InvoiceDraftModelOutput["lines"][number];
 const line = (over: Partial<ModelLine>): ModelLine => ({
@@ -16,7 +16,7 @@ const line = (over: Partial<ModelLine>): ModelLine => ({
 const run = (notes: string[], lines: ModelLine[], rate = 10_000) =>
   applyInvoiceGuardrails({ lines, assumptions: [], unbillable: [] }, { noteLines: notes, clientRateCents: rate });
 
-describe("money helpers (local stand-in for money.ts)", () => {
+describe("money helpers (src/lib/money.ts)", () => {
   it("rounds half up", () => {
     expect(lineAmountCents(150, 333)).toBe(500); // 499.5
     expect(lineAmountCents(1, 50)).toBe(1); // 0.5

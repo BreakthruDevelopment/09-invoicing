@@ -1,5 +1,5 @@
 import type { InvoiceDraftModelOutput } from "./invoice-from-notes";
-import { lineAmountCents } from "./invoice-money";
+import { lineAmountCents } from "@/lib/money";
 
 /** A line is dropped above this amount ($50,000) or at $0. */
 export const MAX_LINE_AMOUNT_CENTS = 5_000_000;

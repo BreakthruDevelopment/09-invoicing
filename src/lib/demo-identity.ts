@@ -15,7 +15,7 @@
  */
 import { APIError } from "better-auth/api";
 
-export const MARKER = "urn:breakthru:demo:v1";
+export const MARKER = "urn:breakthru:invoicing-demo:v1";
 export const DEMO_EMAIL_DOMAIN = "demo.breakthru.test";
 /** Every app's marker starts with this; no public user may write an `image` that does. */
 export const DEMO_IMAGE_PREFIX = "urn:breakthru:";
