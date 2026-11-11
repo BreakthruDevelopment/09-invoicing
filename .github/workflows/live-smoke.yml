@@ -1,0 +1,17 @@
+name: Live smoke test
+on:
+  push:
+    branches: ["claude/live-smoke*"]
+permissions:
+  contents: read
+jobs:
+  packages:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Images pull anonymously
+        run: |
+          for img in 09-invoicing:sha-4171700 10-inventory:sha-c284cb4; do
+            tok=$(curl -fsS "https://ghcr.io/token?scope=repository:breakthrudevelopment/${img%%:*}:pull" | jq -r .token)
+            code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $tok" -H 'Accept: application/vnd.oci.image.index.v1+json' "https://ghcr.io/v2/breakthrudevelopment/${img%%:*}/manifests/${img##*:}")
+            echo "$img $code"; [ "$code" = 200 ]
+          done
