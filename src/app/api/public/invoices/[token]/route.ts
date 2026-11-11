@@ -11,8 +11,9 @@ const HEADERS = {
 };
 
 /**
- * GET /api/public/invoices/:token: what the client's page shows, for a sent, paid or void invoice. No session.
- * Unknown, malformed, rotated, revoked and draft all answer the same 404.
+ * GET /api/public/invoices/:token: the same share lookup as the HTML page at /i/:token (`getPublicInvoice`).
+ * Kept for the payment-status poll (every 3 seconds after a card checkout returns) and for smoke tests.
+ * Unknown, malformed, rotated, revoked and draft tokens all answer the same 404. No session.
  */
 export async function GET(request: Request, ctx: { params: Promise<{ token: string }> }) {
   try {

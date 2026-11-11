@@ -109,5 +109,7 @@ export const manualPaymentInput = z
 export const listQuery = z.object({
   status: z.enum([...INVOICE_STATUSES, "overdue"]).optional(),
   clientId: idSchema.optional(),
+  /** Search term for the invoice number or client name; trimmed, empty means no search. */
+  q: z.string().trim().max(100).optional(),
   limit: z.coerce.number().int().min(1).max(200).default(100),
 });

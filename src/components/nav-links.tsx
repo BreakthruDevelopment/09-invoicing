@@ -7,7 +7,7 @@ export function NavLinks({ links }: { links: { href: string; label: string }[] }
   const pathname = usePathname();
   if (links.length === 0) return null;
   return (
-    <nav aria-label="Main" className="flex items-center gap-5">
+    <nav aria-label="Main" className="flex flex-wrap items-center gap-x-5">
       {links.map((l) => {
         const active = pathname === l.href || pathname.startsWith(`${l.href}/`);
         return (

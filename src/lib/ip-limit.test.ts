@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { allowPublicRequest, clientIp, resetPublicLimiter } from "./ip-limit";
+import { allowPublicRequest, clientIp, clientIpFromHeaders, resetPublicLimiter } from "./ip-limit";
 
 describe("public per-IP limiter", () => {
   beforeEach(resetPublicLimiter);
@@ -15,5 +15,7 @@ describe("public per-IP limiter", () => {
     const req = new Request("http://x", { headers: { "x-forwarded-for": "9.9.9.9, 8.8.8.8" } });
     expect(clientIp(req)).toBe("8.8.8.8");
     expect(clientIp(new Request("http://x"))).toBe("unknown");
+    expect(clientIpFromHeaders(new Headers({ "x-forwarded-for": "9.9.9.9, 8.8.8.8" }))).toBe("8.8.8.8");
+    expect(clientIpFromHeaders(new Headers())).toBe("unknown");
   });
 });

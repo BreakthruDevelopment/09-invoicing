@@ -7,6 +7,8 @@
 # runs the demo provider; with test keys configured the demo steps are replaced by checks that demo-pay is off.
 #   BASE_URL=https://app7.breakthruventures.ai ./scripts/smoke.sh
 set -euo pipefail
+# macOS bash 3.2 brace-expands JSON objects inside "$()" even when the quotes look escaped. Leave {a,b} alone.
+set +B
 
 BASE_URL="${BASE_URL:-http://localhost:3000}"
 RUN_ID="$(date +%s)$RANDOM"
@@ -51,6 +53,16 @@ for path in /dashboard /admin; do
 done
 pass "signed-out dashboard and admin redirect"
 
+for path in /invoices /invoices/new /clients /settings; do
+  code=$(curl -s -o /dev/null -w '%{http_code}' "$BASE_URL$path")
+  [ "$code" = "307" ] || fail "signed-out $path should redirect (307), got $code"
+done
+pass "signed-out invoice, client and settings pages redirect"
+
+home=$(curl -fsS "$BASE_URL/") || fail "home page did not render"
+echo "$home" | grep -q 'No real money moves' || fail "home page is missing the demo banner"
+pass "home page explains the demo"
+
 signup() {
   local jar=$1 email=$2
   curl -fsS -c "$jar" -b "$jar" -H 'content-type: application/json' -H "origin: $BASE_URL" \
@@ -61,6 +73,15 @@ signup() {
 signup "$JAR_A" "smoke-a-$RUN_ID@example.test"
 signup "$JAR_B" "smoke-b-$RUN_ID@example.test"
 pass "two users signed up"
+
+for path in /invoices /invoices/new /clients /settings; do
+  page=$(curl -fsS -b "$JAR_A" "$BASE_URL$path") || fail "signed-in $path did not render"
+  echo "$page" | grep -q 'Explore breakthruventures.ai' || fail "signed-in $path is missing the shared footer"
+done
+echo "$page" | grep -q 'Business profile' || fail "settings page did not render"
+inv_page=$(curl -fsS -b "$JAR_A" "$BASE_URL/invoices")
+echo "$inv_page" | grep -q 'Outstanding' || fail "invoice list is missing the outstanding total"
+pass "signed-in invoice pages render inside the shared shell"
 
 # ---------------------------------------------------------------------------
 # Invoicing: clients, a draft with server-computed totals, send and numbering, immutability, ownership, share link.
@@ -94,6 +115,11 @@ version=$(echo "$draft" | jget invoice.version)
 [ "$(echo "$draft" | jget invoice.number)" = "" ] || fail "a draft must have no number: $draft"
 pass "draft with two lines; totals computed on the server"
 
+editor=$(curl -fsS -b "$JAR_A" "$BASE_URL/invoices/$inv_id") || fail "invoice editor did not render"
+echo "$editor" | grep -q '518.52' || fail "editor should show the server total 518.52"
+echo "$editor" | grep -q 'Design' || fail "editor should show the saved line"
+echo "$editor" | grep -q "/api/invoices/$inv_id/pdf" || fail "editor should link to the invoice PDF"
+pass "invoice editor shows the saved line and the server total"
 fetch_pdf "draft.pdf" -b "$JAR_A" "$BASE_URL/api/invoices/$inv_id/pdf" || fail "owner draft pdf"
 [ "$(status "$BASE_URL/api/invoices/$inv_id/pdf")" = "401" ] || fail "anonymous invoice pdf should be 401"
 pass "owner downloads the draft PDF as draft.pdf; anonymous is 401"
@@ -109,6 +135,23 @@ token="${share_url##*/i/}"
 [ "${#token}" = "43" ] || fail "share token should be 43 characters, got: $share_url"
 version=$(echo "$sent" | jget invoice.version)
 pass "send -> INV-0001 with a share link"
+
+html_headers=$(mktemp)
+html=$(curl -fsS -D "$html_headers" "$BASE_URL/i/$token") || fail "public invoice page did not render"
+echo "$html" | grep -q 'INV-0001' || fail "public page should show INV-0001"
+echo "$html" | grep -q 'Smoke Client' || fail "public page should name the client"
+echo "$html" | grep -q 'ap@client.example' && fail "public page leaked the client email"
+echo "$html" | grep -q "/i/$token/pdf" || fail "public page should link to its PDF"
+echo "$html" | grep -q 'Explore breakthruventures.ai' || fail "public page is missing the shared footer"
+grep -qi '^cache-control: private, no-store' "$html_headers" || fail "public page should be private, no-store"
+grep -qi '^referrer-policy: no-referrer' "$html_headers" || fail "public page should send no-referrer"
+grep -qi '^x-robots-tag: noindex' "$html_headers" || fail "public page should be noindex"
+if [ "$payments_mode" = "demo" ]; then
+  echo "$html" | grep -q 'Pay (demo)' || fail "public page should offer Pay (demo)"
+fi
+rm -f "$html_headers"
+[ "$(status "$BASE_URL/i/$(printf 'a%.0s' $(seq 43))")" = "404" ] || fail "unknown token page should be 404"
+pass "public invoice page renders without a session"
 
 code=$(status -X PATCH -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"version\":$version,\"memo\":\"sneaky\"}" "$BASE_URL/api/invoices/$inv_id")
 [ "$code" = "409" ] || fail "editing a sent invoice should be 409, got $code"
@@ -199,6 +242,10 @@ unk_checkout=$(pub_post "/i/$(printf 'a%.0s' $(seq 43))/checkout" "$body_file")
 [ "$(pub_post "/i/$new_token/checkout" "$body_file")" = "409" ] || fail "checkout on a paid invoice should be 409"
 
 if [ "$payments_mode" = "demo" ]; then
+  demo_html=$(curl -fsS "$BASE_URL/i/$pay_token/demo-pay") || fail "demo pay page did not render"
+  echo "$demo_html" | grep -q 'Demo payment, no money moves' || fail "demo pay page should say no money moves"
+  echo "$demo_html" | grep -q 'Explore breakthruventures.ai' || fail "demo pay page is missing the shared footer"
+  pass "demo pay page renders"
   [ "$(pub_post "/i/$pay_token/checkout" "$body_file")" = "200" ] || fail "demo checkout failed: $(cat "$body_file")"
   [ "$(jget provider < "$body_file")" = "demo" ] || fail "checkout should pick the demo provider: $(cat "$body_file")"
   [ "$(jget url < "$body_file")" = "$BASE_URL/i/$pay_token/demo-pay" ] || fail "demo checkout url unexpected: $(cat "$body_file")"
@@ -206,6 +253,7 @@ if [ "$payments_mode" = "demo" ]; then
   [ "$(pub_post "/api/public/invoices/$pay_token/demo-pay" "$body_file" https://evil.example)" = "403" ] || fail "cross-origin demo-pay should be 403"
   [ "$(pub_post "/api/public/invoices/$pay_token/demo-pay" "$body_file")" = "200" ] || fail "demo pay failed: $(cat "$body_file")"
   [ "$(curl -fsS "$BASE_URL/api/public/invoices/$pay_token" | jget invoice.status)" = "paid" ] || fail "demo pay should mark the invoice paid"
+  curl -fsS "$BASE_URL/i/$pay_token" | grep -q 'Paid' || fail "public page should show the invoice as paid"
   [ "$(pub_post "/api/public/invoices/$pay_token/demo-pay" "$body_file")" = "409" ] || fail "a second demo pay should be 409"
   paid_a=$(curl -fsS -b "$JAR_A" "$BASE_URL/api/invoices/$pay_id")
   [ "$(echo "$paid_a" | jget invoice.status)" = "paid" ] || fail "owner should see the invoice paid: $paid_a"

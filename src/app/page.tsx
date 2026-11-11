@@ -1,49 +1,54 @@
 import Link from "next/link";
-import { DemoBadge, PageIntro, Panel, StatusBadge, buttonPrimary, buttonSecondary } from "@/components/ui";
+import type { Metadata } from "next";
+import { PageIntro, Panel } from "@/components/ui";
+import { buttonPrimary, buttonSecondary } from "@/components/ui/styles";
+import { DemoBanner } from "@/components/invoicing/demo-banner";
+import { getCurrentUser } from "@/lib/auth/session";
 
-const features = [
-  { title: "Sign-in with roles", body: "Email and password out of the box, OIDC providers by config, admin and user roles enforced on the server." },
-  { title: "Postgres", body: "Typed schema and migrations with Drizzle. Every query checks who is asking." },
-  { title: "AI feature", body: "One gateway for every model call: input limits, validated JSON output, and a demo fallback." },
-  { title: "Any cloud", body: "One container image, deployed to AWS, Azure, Google Cloud or Oracle Cloud with Terraform." },
+export const metadata: Metadata = { title: "Invoicing" };
+
+const points = [
+  { title: "Clients and drafts", body: "Keep a client list with an hourly rate. Draft an invoice, then send it. A sent invoice is frozen; void and duplicate it to change one." },
+  { title: "Draft from notes", body: "Paste a week of project notes. Each suggested line shows the evidence it came from. Nothing is added until you check the lines." },
+  { title: "A link the client opens", body: "Send is a share link, not an email from us. Your client opens it on a phone, then pays with the demo payment. No card is charged." },
 ];
 
-export default function Home() {
+export default async function Home() {
+  const user = await getCurrentUser();
   return (
     <>
       <PageIntro
-        section="Template"
-        title="A production-shaped starting point."
-        description="Each app in the portfolio starts from this template and replaces the example items with its own domain and AI feature."
+        section="Invoicing"
+        title="Invoices that get paid."
+        description="Keep clients, turn project notes into line items, and send a link your client can open on a phone."
         actions={
-          <>
+          user ? (
+            <Link href="/invoices" className={buttonPrimary}>
+              Your invoices
+            </Link>
+          ) : (
             <Link href="/sign-in" className={buttonPrimary}>
-              Get started
+              Sign in
             </Link>
-            <Link href="/api/health" className={buttonSecondary}>
-              Health check
-            </Link>
-          </>
+          )
         }
       />
+      <DemoBanner />
       <div className="grid gap-x-4 sm:grid-cols-2">
-        {features.map((f) => (
-          <Panel key={f.title} title={f.title}>
-            <p className="text-muted">{f.body}</p>
+        {points.map((point) => (
+          <Panel key={point.title} title={point.title}>
+            <p className="text-muted">{point.body}</p>
           </Panel>
         ))}
       </div>
-      <Panel title="Status labels" action={<DemoBadge />}>
-        <p className="mb-3 text-muted">
-          The shared badges used across the portfolio. Not started is neutral, never an error.
-        </p>
-        <div className="flex flex-wrap gap-2">
-          <StatusBadge status="live" />
-          <StatusBadge status="building" />
-          <StatusBadge status="blocked" />
-          <StatusBadge status="not-started" />
+      {!user && (
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-sm text-muted">New here?</p>
+          <Link href="/sign-in" className={buttonSecondary}>
+            Create an account
+          </Link>
         </div>
-      </Panel>
+      )}
     </>
   );
 }
