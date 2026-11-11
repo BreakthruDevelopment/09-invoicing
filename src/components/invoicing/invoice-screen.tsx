@@ -178,6 +178,9 @@ export function InvoiceScreen({ initial, clients }: { initial: ClientInvoice; cl
         <InvoiceStatusBadge status={invoice.status} overdue={invoice.overdue} />
         <p className="font-mono text-sm text-muted">{title}</p>
         {invoice.clientName && <p className="text-sm break-words">For {invoice.clientName}</p>}
+        <a className={buttonSecondary} href={`/api/invoices/${invoice.id}/pdf`}>
+          Download PDF
+        </a>
       </div>
       {error && (
         <div className="mb-4">

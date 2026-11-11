@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { headers } from "next/headers";
 import { notFound } from "next/navigation";
+import { buttonSecondary } from "@/components/ui/styles";
 import { type Column, DataList, PageIntro, Panel } from "@/components/ui";
 import { DemoBanner } from "@/components/invoicing/demo-banner";
 import { InvoiceStatusBadge } from "@/components/invoicing/invoice-status";
@@ -61,6 +62,9 @@ export default async function PublicInvoicePage({
           <span className="text-muted">Due </span>
           <time dateTime={invoice.dueDate}>{invoice.dueDate}</time>
         </p>
+        <a className={buttonSecondary} href={`/i/${token}/pdf`}>
+          Download PDF
+        </a>
       </div>
       {payment === "cancelled" && invoice.status === "sent" && (
         <p role="status" className="mb-4 text-sm font-medium">
