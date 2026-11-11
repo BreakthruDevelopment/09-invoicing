@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # End-to-end smoke test against a running app (local, CI, or a deployed URL).
 # Signs up two users over HTTP and walks the invoicing flow: client, draft, send, numbering, immutability,
-# ownership (other users get 404), share link, manual payment, the payer's checkout and demo payment, the signed
+# ownership (other users get 404, including the PDF), the invoice PDF for the owner and the share link,
+# share link, manual payment, the payer's checkout and demo payment, the signed
 # webhook (a bad signature is refused), and the health `payments` mode. Needs no Stripe keys: without them the app
 # runs the demo provider; with test keys configured the demo steps are replaced by checks that demo-pay is off.
 #   BASE_URL=https://app7.breakthruventures.ai ./scripts/smoke.sh
@@ -10,12 +11,25 @@ set -euo pipefail
 BASE_URL="${BASE_URL:-http://localhost:3000}"
 RUN_ID="$(date +%s)$RANDOM"
 JAR_A="$(mktemp)"; JAR_B="$(mktemp)"
-trap 'rm -f "$JAR_A" "$JAR_B"' EXIT
+PDF_HEADERS="$(mktemp)"; PDF_BODY="$(mktemp)"
+trap 'rm -f "$JAR_A" "$JAR_B" "$PDF_HEADERS" "$PDF_BODY"' EXIT
 
 fail() { echo "SMOKE FAIL: $*" >&2; exit 1; }
 # jget '<path.to.value>' reads a field from JSON on stdin
 jget() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const v=process.argv[1].split(".").reduce((a,k)=>a?.[k],JSON.parse(s));console.log(v==null?"":v)})' "$1"; }
 pass() { echo "ok - $*"; }
+# Download a PDF and check the attachment headers plus the %PDF- magic. The filename is the only user-facing name.
+fetch_pdf() {
+  local name=$1; shift
+  local code
+  code=$(curl -s -D "$PDF_HEADERS" -o "$PDF_BODY" -w '%{http_code}' "$@")
+  [ "$code" = "200" ] || fail "pdf $name should be 200, got $code: $(head -c 180 "$PDF_BODY")"
+  grep -qi '^content-type: application/pdf' "$PDF_HEADERS" || fail "pdf $name content-type: $(grep -i '^content-type:' "$PDF_HEADERS" || true)"
+  grep -qi "^content-disposition: attachment; filename=\"${name}\"" "$PDF_HEADERS" || fail "pdf $name disposition: $(grep -i '^content-disposition:' "$PDF_HEADERS" || true)"
+  grep -qi '^x-content-type-options: nosniff' "$PDF_HEADERS" || fail "pdf $name should be nosniff"
+  grep -qi '^cache-control: private, no-store' "$PDF_HEADERS" || fail "pdf $name should be private, no-store"
+  head -c 5 "$PDF_BODY" | grep -q '%PDF-' || fail "pdf $name should start with %PDF-"
+}
 
 health=$(curl -fsS "$BASE_URL/api/health") || fail "health endpoint unreachable"
 echo "$health" | grep -q '"status":"ok"' || fail "health not ok: $health"
@@ -80,6 +94,10 @@ version=$(echo "$draft" | jget invoice.version)
 [ "$(echo "$draft" | jget invoice.number)" = "" ] || fail "a draft must have no number: $draft"
 pass "draft with two lines; totals computed on the server"
 
+fetch_pdf "draft.pdf" -b "$JAR_A" "$BASE_URL/api/invoices/$inv_id/pdf" || fail "owner draft pdf"
+[ "$(status "$BASE_URL/api/invoices/$inv_id/pdf")" = "401" ] || fail "anonymous invoice pdf should be 401"
+pass "owner downloads the draft PDF as draft.pdf; anonymous is 401"
+
 [ "$(status -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{"totalCents":1}' "$BASE_URL/api/invoices")" = "400" ] || fail "client-supplied totals should be 400"
 pass "client-supplied totals refused"
 
@@ -98,7 +116,7 @@ code=$(status -X DELETE -b "$JAR_A" -H "origin: $BASE_URL" "$BASE_URL/api/invoic
 [ "$code" = "409" ] || fail "deleting a sent invoice should be 409, got $code"
 pass "sent invoice is immutable"
 
-for target in "GET /api/invoices/$inv_id" "GET /api/clients/$client_id"; do
+for target in "GET /api/invoices/$inv_id" "GET /api/invoices/$inv_id/pdf" "GET /api/clients/$client_id"; do
   code=$(status -b "$JAR_B" "$BASE_URL${target#* }")
   [ "$code" = "404" ] || fail "user B on A's ${target#* } should be 404, got $code"
 done
@@ -119,9 +137,9 @@ DELETE|/api/clients/$client_id|
 LIST
 list_b=$(curl -fsS -b "$JAR_B" "$BASE_URL/api/invoices")
 echo "$list_b" | grep -q '"invoices":\[\]' || fail "user B's invoice list should be empty: $list_b"
-pass "user B gets 404 on A's invoice, client, payments, share and transitions"
+pass "user B gets 404 on A's invoice, PDF, client, payments, share and transitions"
 
-pub_headers=$(mktemp); trap 'rm -f "$JAR_A" "$JAR_B" "$pub_headers"' EXIT
+pub_headers=$(mktemp); trap 'rm -f "$JAR_A" "$JAR_B" "$PDF_HEADERS" "$PDF_BODY" "$pub_headers"' EXIT
 pub=$(curl -fsS -D "$pub_headers" "$BASE_URL/api/public/invoices/$token") || fail "share link did not open without a session"
 [ "$(echo "$pub" | jget invoice.number)" = "INV-0001" ] || fail "public invoice should be INV-0001: $pub"
 [ "$(echo "$pub" | jget invoice.totalCents)" = "51852" ] || fail "public total should be 51852: $pub"
@@ -132,11 +150,24 @@ grep -qi '^x-robots-tag: noindex' "$pub_headers" || fail "public invoice should 
 [ "$(status "$BASE_URL/api/public/invoices/$(printf 'a%.0s' $(seq 43))")" = "404" ] || fail "unknown token should be 404"
 pass "share link opens without a session, with private headers and no client email"
 
+fetch_pdf "INV-0001.pdf" -b "$JAR_A" "$BASE_URL/api/invoices/$inv_id/pdf" || fail "owner sent pdf"
+fetch_pdf "INV-0001.pdf" "$BASE_URL/i/$token/pdf" || fail "public pdf"
+grep -qi '^referrer-policy: no-referrer' "$PDF_HEADERS" || fail "public pdf should send no-referrer"
+grep -qi '^x-robots-tag: noindex' "$PDF_HEADERS" || fail "public pdf should be noindex"
+unk=$(curl -s -D "$PDF_HEADERS" -o "$PDF_BODY" -w '%{http_code}' "$BASE_URL/i/$(printf 'a%.0s' $(seq 43))/pdf")
+[ "$unk" = "404" ] || fail "unknown token pdf should be 404, got $unk"
+grep -q '{"error":"Not found"}' "$PDF_BODY" || fail "unknown token pdf body: $(head -c 180 "$PDF_BODY")"
+grep -qi '^content-disposition:' "$PDF_HEADERS" && fail "a missing pdf must not set a filename"
+grep -qi '^cache-control: private, no-store' "$PDF_HEADERS" || fail "unknown token pdf should be private, no-store"
+pass "owner and share-link PDFs are INV-0001.pdf; an unknown token is the same 404"
+
 rotated=$(post_a "/api/invoices/$inv_id/share" '{}') || fail "rotate failed"
 new_token="$(echo "$rotated" | jget shareUrl)"; new_token="${new_token##*/i/}"
 [ "$(status "$BASE_URL/api/public/invoices/$token")" = "404" ] || fail "rotated token should 404 at once"
 [ "$(status "$BASE_URL/api/public/invoices/$new_token")" = "200" ] || fail "new token should open"
-pass "rotating the share link kills the old one"
+[ "$(status "$BASE_URL/i/$token/pdf")" = "404" ] || fail "rotated token pdf should 404 at once"
+fetch_pdf "INV-0001.pdf" "$BASE_URL/i/$new_token/pdf" || fail "new token pdf"
+pass "rotating the share link kills the old JSON and the old PDF"
 
 paid=$(post_a "/api/invoices/$inv_id/payments" "{\"version\":$version,\"note\":\"smoke\"}") || fail "manual payment failed"
 [ "$(echo "$paid" | jget invoice.status)" = "paid" ] || fail "invoice should be paid: $paid"
@@ -152,12 +183,19 @@ pay_id=$(echo "$pay_draft" | jget invoice.id)
 pay_sent=$(post_a "/api/invoices/$pay_id/transition" "{\"to\":\"sent\",\"version\":$(echo "$pay_draft" | jget invoice.version)}") || fail "send second invoice failed"
 pay_token="$(echo "$pay_sent" | jget shareUrl)"; pay_token="${pay_token##*/i/}"
 
-pub_post() { curl -s -o "$2" -w '%{http_code}' -X POST -H 'content-type: application/json' -H "origin: ${3:-$BASE_URL}" -d "${4:-{\}}" "$BASE_URL$1"; }
-body_file=$(mktemp); trap 'rm -f "$JAR_A" "$JAR_B" "$pub_headers" "$body_file"' EXIT
+# Default body is `{}`. A ${var:-{\}} default keeps the backslash on macOS bash 3.2, and that is not JSON.
+pub_post() {
+  local origin="${3:-$BASE_URL}"
+  local data="${4-}"
+  if [ -z "$data" ]; then data='{}'; fi
+  curl -s -o "$2" -w '%{http_code}' -X POST -H 'content-type: application/json' -H "origin: $origin" -d "$data" "$BASE_URL$1"
+}
+body_file=$(mktemp); trap 'rm -f "$JAR_A" "$JAR_B" "$PDF_HEADERS" "$PDF_BODY" "$pub_headers" "$body_file"' EXIT
 
 [ "$(pub_post "/i/$pay_token/checkout" "$body_file" https://evil.example)" = "403" ] || fail "cross-origin checkout should be 403"
 [ "$(pub_post "/i/$pay_token/checkout" "$body_file" "$BASE_URL" '{"amountCents":1}')" = "400" ] || fail "checkout must not accept an amount"
-[ "$(pub_post "/i/$(printf 'a%.0s' $(seq 43))/checkout" "$body_file")" = "404" ] || fail "checkout on an unknown token should be 404"
+unk_checkout=$(pub_post "/i/$(printf 'a%.0s' $(seq 43))/checkout" "$body_file")
+[ "$unk_checkout" = "404" ] || fail "checkout on an unknown token should be 404, got $unk_checkout: $(head -c 180 "$body_file")"
 [ "$(pub_post "/i/$new_token/checkout" "$body_file")" = "409" ] || fail "checkout on a paid invoice should be 409"
 
 if [ "$payments_mode" = "demo" ]; then
@@ -223,9 +261,16 @@ ai_id=$(echo "$ai_draft" | jget invoice.id); ai_ver=$(echo "$ai_draft" | jget in
 AL="$BASE_URL/api/invoices/$ai_id/draft-lines"
 [ "$(status -X POST -H 'content-type: application/json' -H "origin: $BASE_URL" -d '{}' "$AL")" = "401" ] || fail "anonymous add-to-invoice should be 401"
 [ "$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H 'origin: https://evil.example' -d '{}' "$AL")" = "403" ] || fail "cross-origin add-to-invoice should be 403"
-[ "$(status -X POST -b "$JAR_B" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"draftId\":\"$draft_id\",\"lineIndexes\":[0],\"version\":$ai_ver}" "$AL")" = "404" ] || fail "user B adding to A's invoice should be 404"
-[ "$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"draftId\":\"$draft_id\",\"lineIndexes\":[0],\"version\":$ai_ver,\"unitPriceCents\":1,\"amountCents\":1,\"source\":\"manual\"}" "$AL")" = "400" ] || fail "amounts or source from the browser should be 400"
-[ "$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"draftId\":\"$draft_id\",\"lineIndexes\":[0],\"version\":$((ai_ver + 5))}" "$AL")" = "409" ] || fail "a stale version should be 409"
+# JSON stays in a variable. Inside "$(...)", bash 3.2 splits a \"{...}\" argument on commas.
+add_body=$(printf '{"draftId":"%s","lineIndexes":[0],"version":%s}' "$draft_id" "$ai_ver")
+code=$(status -X POST -b "$JAR_B" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "$add_body" "$AL")
+[ "$code" = "404" ] || fail "user B adding to A's invoice should be 404, got $code"
+tamper_body=$(printf '{"draftId":"%s","lineIndexes":[0],"version":%s,"unitPriceCents":1,"amountCents":1,"source":"manual"}' "$draft_id" "$ai_ver")
+code=$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "$tamper_body" "$AL")
+[ "$code" = "400" ] || fail "amounts or source from the browser should be 400, got $code"
+stale_body=$(printf '{"draftId":"%s","lineIndexes":[0],"version":%s}' "$draft_id" "$((ai_ver + 5))")
+code=$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "$stale_body" "$AL")
+[ "$code" = "409" ] || fail "a stale version should be 409, got $code"
 if [ "$is_demo" = "1" ]; then
   added=$(curl -fsS -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" \
     -d "{\"draftId\":\"$draft_id\",\"lineIndexes\":[0,1],\"version\":$ai_ver}" "$AL") || fail "add to invoice failed"
@@ -234,10 +279,14 @@ if [ "$is_demo" = "1" ]; then
   [ "$(echo "$added" | jget lines.1.source)" = "ai" ] || fail "added lines should be source ai: $added"
   [ "$(echo "$added" | jget lines.2.source)" = "ai" ] || fail "added lines should be source ai: $added"
   [ "$(echo "$added" | jget invoice.version)" = "$((ai_ver + 1))" ] || fail "version should go up by one: $added"
-  [ "$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"draftId\":\"$draft_id\",\"lineIndexes\":[0],\"version\":$((ai_ver + 1))}" "$AL")" = "409" ] || fail "adding the same draft twice should be 409"
+  again_body=$(printf '{"draftId":"%s","lineIndexes":[0],"version":%s}' "$draft_id" "$((ai_ver + 1))")
+  code=$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "$again_body" "$AL")
+  [ "$code" = "409" ] || fail "adding the same draft twice should be 409, got $code"
   sent_ai=$(post_a "/api/invoices/$ai_id/transition" "{\"to\":\"sent\",\"version\":$((ai_ver + 1))}") || fail "send AI invoice failed"
   draft2=$(curl -fsS -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"notes\":\"$NOTES\",\"clientId\":\"$client_id\"}" "$DN") || fail "second draft failed"
-  [ "$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "{\"draftId\":\"$(echo "$draft2" | jget draft.draftId)\",\"lineIndexes\":[0],\"version\":$(echo "$sent_ai" | jget invoice.version)}" "$AL")" = "409" ] || fail "a sent invoice must not take lines (409)"
+  sent_body=$(printf '{"draftId":"%s","lineIndexes":[0],"version":%s}' "$(echo "$draft2" | jget draft.draftId)" "$(echo "$sent_ai" | jget invoice.version)")
+  code=$(status -X POST -b "$JAR_A" -H 'content-type: application/json' -H "origin: $BASE_URL" -d "$sent_body" "$AL")
+  [ "$code" = "409" ] || fail "a sent invoice must not take lines (409), got $code"
   pass "add to invoice: server-derived amounts, source ai, version bump, single-use, drafts only, owner only"
 else
   pass "add to invoice: auth, ownership, tampering and stale-version refusals (live model: lines vary, amounts not asserted)"
