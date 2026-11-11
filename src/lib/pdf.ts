@@ -1,5 +1,5 @@
 import "server-only";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
 import { type Actor } from "@/lib/auth/rbac";
 import { db, schema } from "@/lib/db";
@@ -586,7 +586,7 @@ export async function ownerInvoicePdf(actor: Actor, id: string): Promise<{ bytes
 
 /**
  * The client's PDF. Uses `resolveShareToken`, the same lookup as `GET /api/public/invoices/:token`: a draft, a
- * malformed token, an unknown token and a rotated one are all null. Client email is omitted, as on that route.
+ * malformed token, an unknown token and a rotated one are all null. Client email and address are omitted, as on that route.
  */
 export async function publicInvoicePdf(token: unknown): Promise<{ bytes: Uint8Array; filename: string } | null> {
   const row = await resolveShareToken(token);
@@ -601,7 +601,7 @@ export async function publicInvoicePdf(token: unknown): Promise<{ bytes: Uint8Ar
         amountCents: invoiceLine.amountCents,
       })
       .from(invoiceLine)
-      .where(eq(invoiceLine.invoiceId, row.id))
+      .where(and(eq(invoiceLine.invoiceId, row.id), eq(invoiceLine.ownerId, row.ownerId)))
       .orderBy(asc(invoiceLine.position)),
     db()
       .select({
@@ -619,7 +619,8 @@ export async function publicInvoicePdf(token: unknown): Promise<{ bytes: Uint8Ar
     status,
     overdue: status === "sent" && row.dueDate < todayIn(profile?.timeZone ?? "UTC"),
     from: { name: profile?.name ?? "", address: profile?.address ?? "", email: profile?.contactEmail ?? "" },
-    billTo: { name: row.clientSnapshot?.name ?? "", address: row.clientSnapshot?.address ?? "", email: "" },
+    // Name only: the public JSON (`getPublicInvoice`) omits the client's address and email, so the PDF does too.
+    billTo: { name: row.clientSnapshot?.name ?? "", address: "", email: "" },
     issueDate: row.issueDate,
     dueDate: row.dueDate,
     memo: row.memo,

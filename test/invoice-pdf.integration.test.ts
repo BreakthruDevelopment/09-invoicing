@@ -117,6 +117,7 @@ describe.skipIf(!url)("invoice PDF routes (Postgres)", () => {
     expect(text).toContain("?");
     expect(text).not.toContain("😀");
     expect(text).toContain("INV-0001");
+    expect(text).toContain("9 Dock St"); // the owner's copy keeps the client's address
     expect(text).toContain("$350.00");
     expect(Buffer.from(bytes).includes(Buffer.from("😀", "utf8"))).toBe(false);
 
@@ -132,6 +133,8 @@ describe.skipIf(!url)("invoice PDF routes (Postgres)", () => {
     expect(pubText).toContain("INV-0001");
     expect(pubText).toContain("<script>alert(1)</script>");
     expect(pubText).not.toContain("ap@northwind.example");
+    expect(pubText).not.toContain("9 Dock St"); // no client address on the public copy
+    expect(pubText).toContain("Northwind");
   });
 
   it("a signed-out caller gets 401, and another user and an admin get 404", async () => {
