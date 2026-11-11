@@ -1,5 +1,5 @@
 import "server-only";
-import { type SQL, and, asc, count, desc, eq, inArray, lt, sql } from "drizzle-orm";
+import { type SQL, and, asc, count, desc, eq, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import { type Actor, assertCan } from "@/lib/auth/rbac";
 import { db, schema } from "@/lib/db";
 import type { Invoice, InvoiceLine, Payment } from "@/lib/db/schema";
@@ -118,6 +118,18 @@ export async function listInvoices(actor: Actor, rawQuery: unknown = {}): Promis
   if (q.status === "overdue") conds.push(eq(invoice.status, "sent"), lt(invoice.dueDate, today));
   else if (q.status) conds.push(eq(invoice.status, q.status));
   if (q.clientId) conds.push(eq(invoice.clientId, q.clientId));
+  if (q.q) {
+    // Searched in SQL, before the limit, so old invoices are found. The term is bound as a parameter and its LIKE
+    // wildcards are escaped. A draft has no number yet and is shown as "Draft", so "dra" finds drafts.
+    const pattern = `%${q.q.replace(/[\\%_]/g, "\\$&")}%`;
+    conds.push(
+      or(
+        ilike(invoice.number, pattern),
+        ilike(client.name, pattern),
+        "draft".includes(q.q.toLowerCase()) ? sql`${invoice.number} is null` : undefined,
+      ),
+    );
+  }
   const rows = await db()
     .select({ inv: invoice, clientName: client.name })
     .from(invoice)

@@ -28,7 +28,7 @@ export default async function InvoicesPage({
   const params = await searchParams;
   const status = first(params.status);
   const clientId = first(params.clientId);
-  const query = first(params.q).trim().toLowerCase();
+  const query = first(params.q).trim().slice(0, 100);
   const view = first(params.view) === "cards" ? "cards" : "table";
   const statusFilter = (STATUS_FILTERS as readonly string[]).includes(status) ? status : "";
   const clientFilter = UUID.test(clientId) ? clientId : "";
@@ -38,18 +38,13 @@ export default async function InvoicesPage({
     listInvoices(user, {
       ...(statusFilter ? { status: statusFilter } : {}),
       ...(clientFilter ? { clientId: clientFilter } : {}),
+      ...(query ? { q: query } : {}),
       limit: 200,
     }),
     listClients(user, { includeArchived: true }),
   ]);
 
-  const shown = query
-    ? invoices.filter((invoice) => {
-        const number = (invoice.number ?? "draft").toLowerCase();
-        const name = (invoice.clientName ?? "").toLowerCase();
-        return number.includes(query) || name.includes(query);
-      })
-    : invoices;
+  const shown = invoices;
 
   const columns: Column<InvoiceListItem>[] = [
     {

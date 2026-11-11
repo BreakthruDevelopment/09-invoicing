@@ -92,6 +92,9 @@ export function InvoiceScreen({ initial, clients }: { initial: ClientInvoice; cl
   const [quote, setQuote] = useState<{ key: string; totals: ServerTotals; skipped: number } | null>(null);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+  // "Add to invoice" is in flight: its result replaces the form, so edits made meanwhile would be lost. Lock the editor.
+  const [notesPending, setNotesPending] = useState(false);
+  const locked = pending || notesPending;
   const [reason, setReason] = useState("");
   const [paymentNote, setPaymentNote] = useState("");
 
@@ -196,7 +199,7 @@ export function InvoiceScreen({ initial, clients }: { initial: ClientInvoice; cl
                 <select
                   value={form.clientId}
                   onChange={(event) => setForm({ ...form, clientId: event.target.value })}
-                  disabled={pending}
+                  disabled={locked}
                   className={inputClass}
                 >
                   <option value="">No client yet</option>
@@ -214,18 +217,18 @@ export function InvoiceScreen({ initial, clients }: { initial: ClientInvoice; cl
                   inputMode="decimal"
                   value={form.taxPercent}
                   onChange={(event) => setForm({ ...form, taxPercent: event.target.value })}
-                  disabled={pending}
+                  disabled={locked}
                   className={inputClass}
                   aria-describedby="tax-hint"
                 />
               </label>
               <label className={labelClass}>
                 <span>Issue date</span>
-                <input type="date" value={form.issueDate} onChange={(event) => setForm({ ...form, issueDate: event.target.value })} disabled={pending} className={inputClass} />
+                <input type="date" value={form.issueDate} onChange={(event) => setForm({ ...form, issueDate: event.target.value })} disabled={locked} className={inputClass} />
               </label>
               <label className={labelClass}>
                 <span>Due date</span>
-                <input type="date" value={form.dueDate} onChange={(event) => setForm({ ...form, dueDate: event.target.value })} disabled={pending} className={inputClass} />
+                <input type="date" value={form.dueDate} onChange={(event) => setForm({ ...form, dueDate: event.target.value })} disabled={locked} className={inputClass} />
               </label>
             </div>
             <p id="tax-hint" className="text-sm text-muted">
@@ -234,7 +237,7 @@ export function InvoiceScreen({ initial, clients }: { initial: ClientInvoice; cl
             <LineEditor
               lines={form.lines}
               amounts={totals?.amounts ?? null}
-              disabled={pending}
+              disabled={locked}
               onChange={(lines) => setForm({ ...form, lines })}
             />
             <label className={labelClass}>
@@ -244,16 +247,16 @@ export function InvoiceScreen({ initial, clients }: { initial: ClientInvoice; cl
                 onChange={(event) => setForm({ ...form, memo: event.target.value })}
                 maxLength={1000}
                 rows={3}
-                disabled={pending}
+                disabled={locked}
                 className={`${inputClass} min-h-24 py-2`}
               />
             </label>
             <TotalsReadout totals={totals} skipped={freshQuote?.skipped ?? 0} updating={dirty && !freshQuote} quoteError={quoteError} />
             <div className="flex flex-wrap gap-3">
-              <button type="button" className={buttonPrimary} disabled={pending} onClick={save}>
+              <button type="button" className={buttonPrimary} disabled={locked} onClick={save}>
                 {pending ? "Saving…" : "Save draft"}
               </button>
-              <button type="button" className={buttonSecondary} disabled={pending || dirty || !invoice.clientId || invoice.lines.length === 0 || invoice.totalCents <= 0} onClick={send}>
+              <button type="button" className={buttonSecondary} disabled={locked || dirty || !invoice.clientId || invoice.lines.length === 0 || invoice.totalCents <= 0} onClick={send}>
                 Send
               </button>
             </div>
@@ -288,6 +291,7 @@ export function InvoiceScreen({ initial, clients }: { initial: ClientInvoice; cl
           clientId={invoice.clientId}
           version={invoice.version}
           dirty={dirty}
+          onPendingChange={setNotesPending}
           onApplied={(next) => apply(next, "Lines added. Totals were recalculated on the server.")}
         />
       )}

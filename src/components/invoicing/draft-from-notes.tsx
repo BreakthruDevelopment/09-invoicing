@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { useEffect, useState, useTransition } from "react";
 import { DemoBadge, Panel } from "@/components/ui";
 import { buttonPrimary, buttonSecondary, inputClass, labelClass } from "@/components/ui/styles";
 import { addNotesLines, draftFromNotes } from "@/app/invoices/actions";
@@ -20,12 +20,15 @@ export function DraftFromNotes({
   clientId,
   version,
   dirty,
+  onPendingChange,
   onApplied,
 }: {
   invoiceId: string;
   clientId: string | null;
   version: number;
   dirty: boolean;
+  /** Reports when a request is in flight so the parent can lock its editor; the result replaces the form. */
+  onPendingChange?: (pending: boolean) => void;
   onApplied: (invoice: ClientInvoice) => void;
 }) {
   const [notes, setNotes] = useState("");
@@ -35,6 +38,11 @@ export function DraftFromNotes({
   const [picked, setPicked] = useState<boolean[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [pending, startTransition] = useTransition();
+
+  useEffect(() => {
+    onPendingChange?.(pending);
+    return () => onPendingChange?.(false);
+  }, [pending, onPendingChange]);
 
   function draft() {
     if (!clientId) return;

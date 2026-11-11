@@ -74,6 +74,30 @@ describe.skipIf(!url)("invoicing data layer (Postgres)", () => {
     return { ...r, id: d.invoice.id };
   }
 
+  describe("list search runs in SQL before the limit", () => {
+    it("finds an old invoice beyond the limit, escapes wildcards, and stays owner-scoped", async () => {
+      const old = await sent(alice);
+      const oldNumber = old.detail.invoice.number as string;
+      for (let i = 0; i < 3; i++) await draft(alice, { memo: `newer ${i}` });
+      await sql`update invoice set created_at = now() - interval '1 day' where id = ${old.id}`;
+      // Newest first with limit 2: the old invoice is not in the page without a search, and is found with one.
+      expect((await invoices.listInvoices(alice, { limit: 2 })).map((i: { id: string }) => i.id)).not.toContain(old.id);
+      const byNumber = await invoices.listInvoices(alice, { limit: 2, q: oldNumber.toLowerCase() });
+      expect(byNumber.map((i: { id: string }) => i.id)).toEqual([old.id]);
+      const byClient = await invoices.listInvoices(alice, { limit: 200, q: "NORTHW" });
+      expect(byClient).toHaveLength(4);
+      // "dra" matches drafts (shown as "Draft"); LIKE wildcards in the term are literal.
+      expect(await invoices.listInvoices(alice, { q: "dra" })).toHaveLength(3);
+      expect(await invoices.listInvoices(alice, { q: "%" })).toHaveLength(0);
+      expect(await invoices.listInvoices(alice, { q: "_" })).toHaveLength(0);
+      expect(await invoices.listInvoices(alice, { q: "x'; drop table invoice;--" })).toHaveLength(0);
+      await expect(invoices.listInvoices(alice, { q: "a".repeat(101) })).rejects.toBeTruthy();
+      // Another user and an admin never see alice's rows, search or not.
+      expect(await invoices.listInvoices(bob, { q: "NORTHW" })).toHaveLength(0);
+      expect(await invoices.listInvoices(admin, { q: oldNumber })).toHaveLength(0);
+    });
+  });
+
   describe("ownership: owner allowed, other user 404, admin 404", () => {
     it("clients", async () => {
       const c = await newClient();
