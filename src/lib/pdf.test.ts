@@ -127,7 +127,7 @@ describe("renderInvoicePdf", () => {
       memo: "M".repeat(1000),
       lines: Array.from({ length: 50 }, (_, i) => ({
         kind: i % 3 === 0 ? "hours" : i % 3 === 1 ? "fixed" : "expense",
-        description: `${long} <script>`,
+        description: `<script> ${long}`,
         quantityX100: 9_999_999,
         unitPriceCents: 10_000_000,
         amountCents: 100,

@@ -361,13 +361,25 @@ function tableHeader(fonts: Fonts, m: Metrics, cols: Columns): Row[] {
   ];
 }
 
+/** Most rendered rows one line's description may take. Longer text is clipped with "..." so a max-size invoice fits 3 pages. */
+const MAX_DESCRIPTION_ROWS = 3;
+
+function clipRows(width: Width, rows: string[], maxWidth: number): string[] {
+  if (rows.length <= MAX_DESCRIPTION_ROWS) return rows;
+  const kept = rows.slice(0, MAX_DESCRIPTION_ROWS);
+  let last = kept[MAX_DESCRIPTION_ROWS - 1];
+  while (last && width(`${last}...`) > maxWidth) last = last.slice(0, -1).trimEnd();
+  kept[MAX_DESCRIPTION_ROWS - 1] = `${last}...`;
+  return kept;
+}
+
 function itemRows(doc: PdfDocument, fonts: Fonts, m: Metrics, cols: Columns, canEncode: CanEncode): Row[] {
   const reg = measurer(fonts.regular, m.body);
   const rows: Row[] = [];
   for (const line of doc.lines) {
-    const inColumn = wrap(reg, line.description, cols.descW, canEncode);
+    const inColumn = clipRows(reg, wrap(reg, line.description, cols.descW, canEncode), cols.descW);
     const fits = inColumn.length <= 1;
-    const descLines = fits ? inColumn : wrap(reg, line.description, WIDTH - 12, canEncode);
+    const descLines = fits ? inColumn : clipRows(reg, wrap(reg, line.description, WIDTH - 12, canEncode), WIDTH - 12);
     const pieces: Piece[] = [
       { text: kindLabel(line.kind), x: cols.typeX, size: m.body, font: "regular", color: "muted", baseline: m.body },
       rightPiece(formatQuantity(line.quantityX100), cols.qtyRight, reg, m.body, "regular", "ink"),

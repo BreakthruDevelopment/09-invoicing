@@ -210,4 +210,19 @@ describe.skipIf(!url)("invoice PDF routes (Postgres)", () => {
     expect((await PDFDocument.load(bytes)).getPageCount()).toBeLessThanOrEqual(3);
     expect(extractPdfText(bytes)).toContain("$50.00");
   });
+
+  it("50 lines of multiline descriptions at the input limit still fit 3 pages", async () => {
+    const c = await json(await mod.clients.POST(req("POST", { name: "Northwind" })));
+    const limit = 299; // 150 one-character rows separated by newlines
+    const description = Array.from({ length: 150 }, (_, i) => String.fromCharCode(97 + (i % 26))).join("\n").slice(0, limit);
+    const lines = Array.from({ length: 50 }, () => ({ kind: "fixed" as const, description, quantityX100: 100, unitPriceCents: 100 }));
+    const created = await json(await mod.invoices.POST(req("POST", { clientId: c.client.id, lines })));
+    expect(created.invoice.totalCents).toBe(5_000);
+    await mod.transition.POST(req("POST", { to: "sent", version: created.invoice.version }), ctx(created.invoice.id));
+    const res = await ownerPdf(created.invoice.id);
+    expect(res.status).toBe(200);
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    expect((await PDFDocument.load(bytes)).getPageCount()).toBeLessThanOrEqual(3);
+    expect(extractPdfText(bytes)).toContain("$50.00");
+  });
 });
