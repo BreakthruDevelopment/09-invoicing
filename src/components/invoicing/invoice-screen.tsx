@@ -78,7 +78,7 @@ function payloadOf(form: EditorForm) {
 
 function mailtoHref(email: string | null, number: string | null, url: string): string {
   const subject = number ? `Invoice ${number}` : "Invoice";
-  return `mailto:${email ?? ""}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(url)}`;
+  return `mailto:${email ? encodeURIComponent(email) : ""}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(url)}`;
 }
 
 export function InvoiceScreen({ initial, clients }: { initial: ClientInvoice; clients: ClientOption[] }) {

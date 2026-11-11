@@ -1,16 +1,19 @@
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { type Column, DataList, PageIntro, Panel } from "@/components/ui";
 import { DemoBanner } from "@/components/invoicing/demo-banner";
 import { InvoiceStatusBadge } from "@/components/invoicing/invoice-status";
 import { KIND_LABEL } from "@/components/invoicing/labels";
 import { MoneyRows } from "@/components/invoicing/money-rows";
+import { RateLimited } from "@/components/invoicing/rate-limited";
 import { PayButton } from "@/components/invoicing/pay-button";
 import { PaymentPoll } from "@/components/invoicing/payment-poll";
 import type { InvoiceStatus, LineKind } from "@/components/invoicing/types";
 import { formatQuantity } from "@/lib/form-money";
 import { formatCents } from "@/lib/money";
 import { paymentsMode } from "@/lib/payments";
+import { allowPublicRequest, clientIpFromHeaders } from "@/lib/ip-limit";
 import { getPublicInvoice } from "@/lib/share";
 
 export const metadata: Metadata = { title: "Invoice" };
@@ -29,6 +32,8 @@ export default async function PublicInvoicePage({
 }) {
   const { token } = await params;
   const query = await searchParams;
+  // The same per-IP limit as GET /api/public/invoices/:token, checked before any lookup.
+  if (!allowPublicRequest(clientIpFromHeaders(await headers()))) return <RateLimited />;
   const invoice = await getPublicInvoice(token);
   if (!invoice) notFound();
   const mode = paymentsMode();

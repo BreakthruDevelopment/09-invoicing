@@ -1,11 +1,14 @@
 import Link from "next/link";
 import type { Metadata } from "next";
+import { headers } from "next/headers";
 import { notFound } from "next/navigation";
 import { PageIntro, Panel } from "@/components/ui";
 import { buttonSecondary } from "@/components/ui/styles";
+import { RateLimited } from "@/components/invoicing/rate-limited";
 import { DemoPayButton } from "@/components/invoicing/demo-pay-button";
 import { formatCents } from "@/lib/money";
 import { paymentsMode } from "@/lib/payments";
+import { allowPublicRequest, clientIpFromHeaders } from "@/lib/ip-limit";
 import { getPublicInvoice } from "@/lib/share";
 
 export const metadata: Metadata = { title: "Demo payment" };
@@ -14,6 +17,7 @@ export const dynamic = "force-dynamic";
 export default async function DemoPayPage({ params }: { params: Promise<{ token: string }> }) {
   if (paymentsMode() !== "demo") notFound();
   const { token } = await params;
+  if (!allowPublicRequest(clientIpFromHeaders(await headers()))) return <RateLimited />;
   const invoice = await getPublicInvoice(token);
   if (!invoice) notFound();
 

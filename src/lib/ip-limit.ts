@@ -29,7 +29,12 @@ export function allowPublicRequest(ip: string, now: number = Date.now(), limit: 
  * entries are whatever the caller claimed.
  */
 export function clientIp(request: Request): string {
-  const forwarded = request.headers.get("x-forwarded-for");
+  return clientIpFromHeaders(request.headers);
+}
+
+/** Same rule for code with no `Request`, such as a page reading `headers()` from `next/headers`. */
+export function clientIpFromHeaders(headers: { get(name: string): string | null }): string {
+  const forwarded = headers.get("x-forwarded-for");
   const last = forwarded?.split(",").pop()?.trim();
   return last || "unknown";
 }

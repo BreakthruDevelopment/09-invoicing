@@ -55,7 +55,6 @@ const quoteInput = z
 
 const notesInput = z
   .object({
-    invoiceId: z.string().uuid(),
     clientId: z.string().uuid(),
     notes: z.string().max(6_000),
     periodFrom: z.string().max(10),

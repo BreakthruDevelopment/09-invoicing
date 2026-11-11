@@ -40,7 +40,7 @@ export function DraftFromNotes({
     if (!clientId) return;
     setError(null);
     startTransition(async () => {
-      const result = await draftFromNotes({ invoiceId, clientId, notes, periodFrom, periodTo });
+      const result = await draftFromNotes({ clientId, notes, periodFrom, periodTo });
       if (!result.ok) {
         setReview(null);
         setError(result.error);
